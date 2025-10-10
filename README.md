@@ -20,3 +20,17 @@ This notebook demonstrates:
 
 By following the steps in the example notebook, users can easily reproduce the analysis, adapt it to their own datasets, or integrate the methods into broader fetal monitoring research pipelines.
 
+### **Environment Setup**
+To ensure full reproducibility and easy setup of the required dependencies, this project provides an environment configuration file named environment.yml.This file contains all the necessary libraries (both Conda and pip packages) and their specific versions used during development and testing.
+
+1. Create the Conda Environment
+First, make sure you have Anaconda or Miniconda installed on your system.Then, from the root directory of the repository, run:
+conda env create -f environment.yml
+This command will automatically create a new Conda environment with all the dependencies defined in the file.
+
+2. Activate the Environment
+Once the environment is created, activate it with:
+conda activate dahfi_figo_env
+
+
+
