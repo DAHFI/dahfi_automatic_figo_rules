@@ -583,8 +583,6 @@ class CTG:
         conclusion_graph: bool = True,
     ) -> Union[pd.Series, Dict[str, pd.Series]]:
         """
-        CAMBIAR !! -> añadir rm_tail_nan
-
         Applies the FIGO guidelines for fetal heart rate analysis, integrating baseline,
         decelerations, and variability into a final classification.
 
@@ -1228,7 +1226,7 @@ class CTG:
         else:
             ax = plt.subplot(grid)
 
-        # ax.set_title("VARIABILITY")
+        ax.set_title("VARIABILITY")
 
         # Plot the FHR signal in black
         ax.plot(t, self.fhr, color="black")

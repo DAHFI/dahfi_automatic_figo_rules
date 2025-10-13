@@ -1,4 +1,4 @@
-# **dahfi_automatic_figo_rules**
+# Dahfi Automatic FIGO Rules**
 
 This repository provides an automated implementation of the **FIGO (International Federation of Gynecology and Obstetrics) guidelines** for the classification of **cardiotocographic (CTG) tracings**. Its main purpose is to facilitate the **early detection of intrapartum fetal hypoxia** by applying advanced **signal analysis algorithms** to fetal heart rate (FHR) and uterine contraction data.
 
