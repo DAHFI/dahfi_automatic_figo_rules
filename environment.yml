@@ -213,4 +213,4 @@ dependencies:
       - mne==1.10.1
       - pip==25.2
       - pooch==1.8.2
-prefix: /Users/saraalonso/opt/anaconda3/envs/hypoxia-detection
+
