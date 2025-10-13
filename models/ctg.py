@@ -72,8 +72,6 @@ class CTG:
         rm_tail_nan: bool = False,
     ) -> None:
         """
-        DONE !!
-
         Preprocess the FHR and UC signals according to FIGO guidelines.
 
         This includes:
@@ -172,8 +170,6 @@ class CTG:
         conclusion_graph: bool = True,
     ) -> None:
         """
-        CAMBIAR !! -> añadir rm_final_nan
-
         Apply fetal monitoring interpretation rules to the CTG data.
 
         Currently, only the FIGO ruleset is supported. This method can optionally
@@ -274,8 +270,6 @@ class CTG:
 
     def _get_baseline_graph(self):
         """
-        DONE !!
-
         Plot the Fetal Heart Rate (FHR) signal along with its computed baseline.
 
         This method generates a matplotlib figure displaying the FHR signal, the
@@ -329,8 +323,6 @@ class CTG:
         # TODO: AQUÍ HAY QUE AÑADIR MÁS PARAMETROS !
 
         """
-        DONE !!
-
         Plot the fetal heart rate (FHR) signal and highlight variability classifications.
 
         This method visualizes variability using:
@@ -480,8 +472,6 @@ class CTG:
 
     def plot_ctg(self):
         """
-        DONE !!
-
         Plot the fetal heart rate (FHR) and uterine contraction (UC) signals in two time segments.
 
         This method splits the signals into two halves and displays them using four vertically
@@ -698,8 +688,6 @@ class CTG:
         center: bool = False,
     ) -> pd.Series:
         """
-        DONE !!
-
         Compute and classify the FHR baseline using FIGO thresholds.
 
         This method calculates the baseline of the FHR signal using a rolling mean,
@@ -772,8 +760,6 @@ class CTG:
         graph: bool = False,
     ) -> pd.Series:
         """
-        DONE !!
-
         Classify fetal heart rate (FHR) decelerations using FIGO criteria into:
             - Normal
             - Suspicious
@@ -929,8 +915,6 @@ class CTG:
         red_var_bandwith: int = 5,
     ) -> pd.Series:
         """
-        DONE !!
-
         Classify fetal heart rate (FHR) variability into NORMAL, SUSPICIOUS, and PATHOLOGICAL categories.
 
         This method computes rolling 1-minute windows to estimate variability amplitude (bandwidth),
@@ -1017,8 +1001,6 @@ class CTG:
 
     def _get_conclusion_labels(self, graph: bool = True) -> pd.Series:
         """
-        DONE!!
-
         Generate a final diagnostic conclusion based on the combined evaluation of:
         - Baseline heart rate
         - Decelerations
@@ -1080,8 +1062,6 @@ class CTG:
 
     def _baseline_graph(self, show: int = 0, grid=None) -> None:
         """
-        DONE !!
-
         Plot the FHR signal with background regions based on baseline classification.
 
         This method displays the Fetal Heart Rate (FHR) signal and highlights time
@@ -1137,8 +1117,6 @@ class CTG:
 
     def _decelerations_graph(self, show: int = 0, grid=None) -> None:
         """
-        DONE!!
-
         Plot the fetal heart rate (FHR) signal and highlight deceleration classifications.
 
         This method visualizes decelerations using color-coded regions:
@@ -1196,8 +1174,6 @@ class CTG:
         grid=None,
     ) -> None:
         """
-        DONE !!
-
         Plot the fetal heart rate (FHR) signal with background regions based on variability classification.
 
         This method displays the FHR signal and highlights time intervals classified into different variability categories:
@@ -1251,8 +1227,6 @@ class CTG:
 
     def _conclusion_graph(self) -> None:
         """
-        DONE !!
-
         Plot a comprehensive figure showing baseline, decelerations, variability, and the final conclusion.
 
         The plot is arranged in a 3x2 grid with:
@@ -1316,8 +1290,6 @@ class CTG:
 
     def _get_baseline(self, window_min_size: float, center: bool = False) -> pd.Series:
         """
-        DONE !!
-
         Compute the rolling baseline of the fetal heart rate (FHR) signal.
 
         The baseline is calculated as the rolling mean over a specified window in minutes.
@@ -1345,8 +1317,6 @@ class CTG:
     @staticmethod
     def _get_nan_series_from_series(series: pd.Series) -> pd.DataFrame:
         """
-        DONE !!
-
         Identify consecutive NaN segments in a time series.
 
         This method scans a pandas Series to detect sequences of NaN values
@@ -1387,8 +1357,6 @@ class CTG:
         self, fhr: pd.Series, uc: pd.Series
     ) -> tuple[pd.Series, pd.Series]:
         """
-        DONE!!
-
         Removes trailing NaN values from the end of two aligned pandas Series (fhr and uc).
 
         Args:
@@ -1414,8 +1382,6 @@ class CTG:
     @staticmethod
     def _replace_gaps(signal: pd.Series, threshold: int) -> pd.Series:
         """
-        DONE !!
-
         Replace small gaps (NaN segments) in a signal by interpolation.
 
         This method identifies continuous NaN segments (gaps) in the given signal.
@@ -1458,8 +1424,6 @@ class CTG:
         time_in_deceleration: int = 15,
     ) -> pd.Series:
         """
-        DONE !!
-
         Detect fetal heart rate (FHR) decelerations based on amplitude and duration criteria.
 
         A deceleration is defined as a drop in FHR below the baseline with:
@@ -1534,8 +1498,6 @@ class CTG:
     @staticmethod
     def _extend_condition_back(condition: pd.Series, window: int) -> pd.Series:
         """
-        DONE !!
-
         Extends True values backwards in a boolean pandas Series condition.
 
         For each new True event in the Series, the function sets to True
@@ -1578,8 +1540,6 @@ class CTG:
         center: bool = False,
     ) -> np.ndarray:
         """
-        DONE!
-
         Identify periods of repetitive decelerations based on negative correlation
         between FHR and uterine contractions (UC).
 
@@ -1649,8 +1609,6 @@ class CTG:
         contraction_baseline_duration: int = 120,
     ) -> np.ndarray:
         """
-        DONE !!
-
         Detect late decelerations based on duration and timing relative to uterine contractions.
 
         A late deceleration is defined as a deceleration that:
@@ -1741,8 +1699,6 @@ class CTG:
         baseline_duration: int = 120,
     ) -> np.ndarray:
         """
-        DONE!!
-
         Detect uterine contractions based on a sustained rise in UC signal above a dynamic baseline.
 
         This method analyzes the uterine contraction (UC) signal by:
@@ -1812,8 +1768,6 @@ class CTG:
         center: bool = False,
     ) -> np.ndarray:
         """
-        DONE !!
-
         Identify prolonged decelerations based on sustained deceleration over a specified duration.
 
         A prolonged deceleration is defined as a continuous deceleration that lasts
@@ -1874,8 +1828,6 @@ class CTG:
         red_var_bandwith: int = 5,
     ) -> np.ndarray:
         """
-        DONE!!
-
         Detect periods of reduced fetal heart rate (FHR) variability, either during baseline
         or associated with decelerations.
 
@@ -1965,8 +1917,6 @@ class CTG:
         bandwidth_min: float = 25,
     ) -> pd.Series:
         """
-        DONE!!
-
         Detect periods of increased fetal heart rate (FHR) variability,
         characterized by wide oscillations in FHR sustained over time.
 
@@ -2025,8 +1975,6 @@ class CTG:
 
     def _get_variable_deceleration_condition(self, center: bool = False) -> pd.Series:
         """
-        NO USADA !!
-
         Detect variable decelerations in the fetal heart rate (FHR) signal.
 
         Variable decelerations are V-shaped decelerations characterized by a rapid drop
@@ -2109,8 +2057,6 @@ class CTG:
         center: bool = False,
     ) -> pd.Series:
         """
-        NO USADA !!
-
         Detect early decelerations in the fetal heart rate (FHR) signal.
 
         Early decelerations are gradual decreases in FHR (onset to nadir ≥ 30s)

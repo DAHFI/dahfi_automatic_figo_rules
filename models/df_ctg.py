@@ -41,8 +41,6 @@ class DF_CTG:
 
     def add_ctg(self, ctg: CTG) -> None:
         """
-        DONE !!
-
         Add a CTG (Cardiotocography) object to the DF_CTG container.
 
         This method checks that the frequency of the input CTG matches the internal
@@ -73,8 +71,6 @@ class DF_CTG:
 
     def new_ctg(self, fhr: pd.Series, uc: pd.Series, ph: float, id: int) -> None:
         """
-        DONE !!
-
         Create a new CTG (Cardiotocography) object with given FHR and UC signals, and append it to the CTG list.
 
         This method verifies that the lengths of the fetal heart rate (FHR) and uterine contraction (UC) signals are equal.
@@ -116,8 +112,6 @@ class DF_CTG:
 
     def len_ctgs(self) -> None:
         """
-        DONE !!
-
         Print the distribution of FHR (Fetal Heart Rate) signal lengths among the stored CTGs.
 
         This method counts how many CTGs have FHR signals of each length and prints the results.
@@ -137,8 +131,6 @@ class DF_CTG:
 
     def get_ctg_by_id(self, id: int) -> Optional[CTG]:
         """
-        DONE !!
-
         Retrieve a CTG object by its identifier.
 
         This method searches the stored CTGs for one matching the given id.
@@ -167,8 +159,6 @@ class DF_CTG:
         rm_tail_nan: bool = False,
     ) -> None:
         """
-        DONE !!
-
         Preprocess stored CTG records based on specified rules.
 
         This method supports different preprocessing rule types.
@@ -239,8 +229,6 @@ class DF_CTG:
         conclusion_graph: bool = False,
     ) -> Union[pd.Series, Dict[str, pd.Series]]:
         """
-        DONE !!
-
         Apply labeling rules to each stored CTG and retrieve categorized labels.
 
         This method applies specified diagnostic rules to all CTG records stored in the instance,
@@ -385,8 +373,6 @@ class DF_CTG:
         # normal_vs_rest=True, TODO: Quitarlo del esquema
     ) -> None:
         """
-        DONE !!
-
         Plot ROC curves for CTG labels within a specified pH interval,
         applying diagnostic rules and categorizing labels by severity.
 
@@ -613,8 +599,6 @@ class DF_CTG:
         only_conclusion: bool = False,
     ) -> None:
         """
-        TODO: Ver el tipo de title, no me gusta :/
-
         Plot ROC curves comparing label percentages against hypoxia presence (ph_limit threshold).
 
         Args:
