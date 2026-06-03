@@ -5,6 +5,11 @@ from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from typing import Union, Dict
 
+import skfda
+import numpy as np
+import matplotlib.pyplot as plt
+from skfda.representation.basis import FourierBasis
+
 # TODO: Para los plots podría poner los times en minutos (queda más claro)
 
 
@@ -19,17 +24,26 @@ class CTG:
         self,
         fhr,  # Fetal Heart Rate signal (list or array)
         uc,  # Uterine Contraction signal (list or array)
-        freq,  # Frequency (Hz)
+        clinical_data=None,
+        # freq,  # Frequency (Hz) TODO -> Lo borré
         # Optional data
         ph=None,  # Optional pH value
         id=None,  # Optional ID for the record or patient
+        group=None
         # Thresholds and constants
-        MAX_TIME_FHR=250,  # Maximum plausible FHR value
-        MIN_TIME_FHR=0,  # Minimum plausible FHR value
-        MAX_TIME_UC=150,  # Maximum plausible UC value
-        MIN_TIME_UC=0,  # Minimum plausible UC value
-        NOT_NAN_PERC=0.5,  # Minimum percentage of non-NaN values required in a window
+        # MAX_TIME_FHR=250,  # Maximum plausible FHR value
+        # MIN_TIME_FHR=0,  # Minimum plausible FHR value
+        # MAX_TIME_UC=150,  # Maximum plausible UC value
+        # MIN_TIME_UC=0,  # Minimum plausible UC value
+        # NOT_NAN_PERC=0.5,  # Minimum percentage of non-NaN values required in a window
     ):
+        self.group = None
+
+        if self.group is not None:
+            self.config = self.group.config
+        else: 
+            # TODO: Que lea su proprio archivo de config
+            print("TODOOOO")
 
         # Ensure FHR and UC signals are of the same length
         if len(fhr) != len(uc):
@@ -62,8 +76,20 @@ class CTG:
         # self._variability_labels
         # self._conclusion_labels
 
+        # self.type_smoothe
+        # self.fd_suave
+        # self.n_basis
+
+        # self.corr_fhr_uc
+        # self.corr_fhr_prima_uc
+
     ## ---------------------------------------------
     ## --------------- PREPROCESSING ---------------
+
+    def preprocess_signals():
+        """
+        De momento tenem
+        """
 
     def preprocess_rules_figo(
         self,
@@ -127,6 +153,368 @@ class CTG:
 
         # We update the time
         self._time = pd.Series(time)
+
+    ## ---------------------------------------------
+    ## -------------- CORR FUNCTION ----------------
+
+    def get_corr_fun(
+        self,
+        ax1=None,
+        ax2=None,
+        contador_error=0,
+        one_ctg_analisis=True,
+        max_desplazamiento=5,
+    ):
+        ## (1) Solo consideramos los valores positivos de desplazamiento
+        ## implican que la fhr se desplaza hacia la derecha respecto
+        ## a la uc. Es decir, que los eventos de la uc provocan cambios
+        ## en la fhr.
+
+        ## (2) También nos centramos en analizar la correlación inversa,
+        ## ya que nos interesa saber como se correlacionan las
+        ## deceleraciones con las contracciones
+
+        ## one_ctg_analisis -> borrar, solo se usa para probar el código
+
+        # if len(self.uc) > (30 * 60 * 4 + 1) and one_ctg_analisis:
+        #     print(
+        #         "WARNING: A very large time window is being taken, and the "
+        #         "results might not be meaningful."
+        #     )
+
+        # Máximo desplazamiento 5 mins
+        uc = self.uc
+        fhr = self.fhr
+        tiempo = np.arange(len(uc))
+        max_lags = max_desplazamiento * 4 * 60
+
+        # Hay que interpolar los nan para que funcione las correlaciones
+        uc = np.interp(tiempo, tiempo[~np.isnan(uc)], uc[~np.isnan(uc)])
+        fhr = np.interp(tiempo, tiempo[~np.isnan(fhr)], fhr[~np.isnan(fhr)])
+
+        # derivamos
+        fhr_prima = np.diff(fhr)
+        uc_prima = uc[1:]
+
+        # Evitamos dividir entre 0
+        if np.std(uc_prima) == 0 or np.std(fhr_prima) == 0:
+            if one_ctg_analisis:
+                print(
+                    "Señal plana o inválida.",
+                )
+            else:
+                ct = contador_error + 1
+                print(
+                    ct,
+                    ": Señal ",
+                    int(self.id),
+                    " ( ph = ",
+                    self.ph,
+                    ") plana o inválida.",
+                )
+            return -1
+
+        # normalizar
+        uc_norm = (uc - np.mean(uc)) / np.std(uc)
+        fhr_norm = (fhr - np.mean(fhr)) / np.std(fhr)
+        uc_prima_norm = (uc_prima - np.mean(uc_prima)) / np.std(uc_prima)
+        fhr_prima_norm = (fhr_prima - np.mean(fhr_prima)) / np.std(fhr_prima)
+
+        # Calculamos el Coeficiente de Correlación de Pearson para cada desplazamientos
+        corr_fhr_curva = np.correlate(uc_norm, fhr_norm, mode="full") / len(uc)
+        lags = np.arange(-len(uc) + 1, len(uc))
+
+        filtro_positivos = (lags >= 0) & (lags <= max_lags)
+        corr_fhr_curva = corr_fhr_curva[filtro_positivos]
+        lags = lags[filtro_positivos]
+
+        corr_fhr_prima_curva = np.correlate(
+            uc_prima_norm, fhr_prima_norm, mode="full"
+        ) / len(uc_prima)
+        lags_fhr_prima = np.arange(-len(uc_prima) + 1, len(uc_prima))
+
+        filtro_positivos_fhr_prima = (lags_fhr_prima >= 0) & (
+            lags_fhr_prima <= max_lags
+        )
+        corr_fhr_prima_curva = corr_fhr_prima_curva[filtro_positivos_fhr_prima]
+        lags_fhr_prima = lags_fhr_prima[filtro_positivos_fhr_prima]
+
+        # Sacamos el menor número y el indice al que corresponde
+        indice_minimo = np.argmin(corr_fhr_curva)
+        lag_del_minimo = lags[indice_minimo]
+
+        indice_minimo_fhr_prima = np.argmin(corr_fhr_prima_curva)
+        lag_del_minimo_fhr_prima = lags_fhr_prima[indice_minimo_fhr_prima]
+
+        # Sacamos gráficas
+        if one_ctg_analisis:
+            # graficar las correlaciones con el desplazamiento
+            plt.figure(figsize=(10, 5))
+            eje_x_lags = lags / (4 * 60)
+            plt.plot(eje_x_lags, corr_fhr_curva)
+            # plt.title("Curva de Correlación Cruzada (UC vs FHR)")
+            plt.xlabel("Displacement (min)", fontsize=18)
+            plt.ylabel("Correlation", fontsize=18)
+            plt.grid(True)
+            plt.savefig("corr_curve.pdf", format="pdf", bbox_inches="tight")
+            plt.show()
+
+            print(f"La correlación mínima es: {corr_fhr_curva[indice_minimo]:.2f}")
+            print(
+                f"Ocurre con un desplazamiento de: {lag_del_minimo:.2f} puntos -> {lag_del_minimo/(4*60):.2f} minutos"
+            )
+
+            plt.figure(figsize=(10, 5))
+            eje_x_lags = lags_fhr_prima / (4 * 60)
+            plt.plot(eje_x_lags, corr_fhr_prima_curva)
+            # plt.title("Curva de Correlación Cruzada (UC vs FHR')")
+            plt.xlabel("Displacement (min)")
+            plt.ylabel("Correlation")
+            plt.grid(True)
+            plt.show()
+
+            print(
+                f"La correlación mínima es: {corr_fhr_prima_curva[indice_minimo_fhr_prima]:.2f}"
+            )
+            print(
+                f"Ocurre con un desplazamiento de: {lag_del_minimo_fhr_prima:.2f} puntos -> {lag_del_minimo_fhr_prima/(4*60):.2f} minutos"
+            )
+
+            # curvas desplazada
+            tiempo_desplazado = tiempo - lag_del_minimo
+
+            plt.figure(figsize=(20, 6))
+            plt.plot(tiempo, uc, label="UC (Original)", color="blue", alpha=0.7)
+            plt.plot(
+                tiempo_desplazado,
+                fhr,
+                label=f"FHR desplazada (Lag {lag_del_minimo})",
+                color="black",
+                alpha=0.7,
+            )
+            plt.title("Sincronización de UC y FHR")
+            plt.xlabel("Tiempo (puntos)")
+            plt.ylabel("Señales")
+            plt.legend()
+            plt.grid(True)
+            # plt.savefig("corr_curve.pdf", format="pdf", bbox_inches="tight")
+            plt.show()
+
+        if not one_ctg_analisis:
+            # Pintamos en el gráfico de arriba (FHR original)
+
+            if self.ph < 7.2:
+                color = "red"
+            else:
+                color = "green"
+
+            ax1.scatter(
+                lag_del_minimo / (4 * 60),
+                corr_fhr_curva[indice_minimo],
+                c=color,
+                s=10,
+                alpha=0.5,
+            )
+
+            # Pintamos en el gráfico de abajo (Derivada FHR')
+            ax2.scatter(
+                lag_del_minimo_fhr_prima / (4 * 60),
+                corr_fhr_prima_curva[indice_minimo_fhr_prima],
+                c=color,
+                s=10,
+                alpha=0.5,
+            )
+
+        # Guardamos
+        self.corr_fhr_uc = corr_fhr_curva
+        self.corr_fhr_prima_uc = corr_fhr_prima_curva
+
+        return corr_fhr_curva[indice_minimo], lag_del_minimo
+
+    ## ---------------------------------------------
+    ## ------------------ SMOOTHE ------------------
+
+    def smoothe(
+        self,
+        type_smoothe: str = "Fourier",
+        n_basis=25,
+        plot_smooth_graph=False,
+        plot_fase_graph=False,
+        get_enery_info=False,  # Esto habrá que cambiarlo,
+        get_mechanic_energy=False,
+        get_area_fase=False,
+        get_len_curva=False,
+        create_figure=True,
+    ):
+
+        # Guardamos el tipo de smoothe realizado
+        self.type_smoothe = type_smoothe
+        self.n_basis = n_basis
+
+        # Comprobamos si tiene NaN (no se puede aplicar estos métodos con huecos en la señal)
+        if self.fhr.isna().any():
+
+            # Calcular el porcentaje de nan
+            porcentaje_nan = (self.fhr.isnull().sum() / len(self.fhr)) * 100
+            if porcentaje_nan > 20:
+                print(
+                    f"FIN ANÁLISIS: El {porcentaje_nan:.2f}% del tiempo la señal original toma valor NaN."
+                )
+                return -1
+
+            fhr_aux = self.fhr.interpolate(method="linear").ffill().bfill()
+
+            y_values = fhr_aux.values.reshape(1, -1)
+            tiempos = fhr_aux.index.values
+
+        else:
+            y_values = self.fhr.values.reshape(1, -1)
+            tiempos = self.fhr.index.values
+
+        if type_smoothe == "Fourier":
+            fd = skfda.FDataGrid(grid_points=tiempos, data_matrix=y_values)
+
+            duracion_total = (tiempos[0], tiempos[-1])
+            basis = FourierBasis(domain_range=duracion_total, n_basis=n_basis)
+            fd_suave = fd.to_basis(basis)
+
+            self.fd_suave = fd_suave
+
+            # Mostramos un gráfico con la función suavizada contra la señal original
+            if plot_smooth_graph:
+                plt.figure(figsize=(12, 4))
+                plt.plot(
+                    self._time,
+                    y_values.flatten(),
+                    color="lightgrey",
+                    label="FHR Original",
+                )
+
+                fhr_reconstruida = fd_suave(tiempos).flatten()
+                plt.plot(
+                    self._time,
+                    fhr_reconstruida,
+                    color="teal",
+                    lw=2,
+                    label=f"Fourier Smoothe Curve (n_basis={n_basis})",
+                )
+                plt.title("Raw Data vs. Fourier Smoothing")
+                plt.xlabel("Time")
+                plt.ylabel("FHR (bpm)")
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                # plt.show()
+                plt.savefig("suavizado_fourier.pdf", format="pdf", bbox_inches="tight")
+
+            # Continuamos el análisis
+            if (
+                plot_fase_graph
+                or get_enery_info
+                or get_mechanic_energy
+                or get_area_fase
+                or get_len_curva
+            ):
+                # Calculamos la derivada
+                fd_derivada_1 = fd_suave.derivative(order=1)
+
+                # Evaluamos en 1000 puntos distribuidos en el tiempo real del registro
+                puntos_eval = np.linspace(tiempos[0], tiempos[-1], 1000)
+                y_suave = fd_suave(puntos_eval).flatten()
+                y_prima = fd_derivada_1(puntos_eval).flatten()
+
+            else:
+                return
+
+            if plot_fase_graph:
+
+                # Pintar el gráfico f' vs f''
+                if create_figure:
+                    plt.figure(figsize=(10, 5))
+
+                if self.ph > 7.20:
+                    color = "teal"
+                else:
+                    color = "sandybrown"
+
+                plt.plot(
+                    y_suave,
+                    y_prima,
+                    color=color,
+                    lw=1.5,
+                    alpha=0.6,
+                    label="Trayectoria FHR",
+                )
+
+                if create_figure:
+                    # plt.title("FHR Phase Analysis: Velocity vs. Acceleration")
+                    plt.xlabel("FHR Velocity (bpm/s))", fontsize=18)
+                    plt.ylabel("FHR Acceleration (bpm/s²)", fontsize=18)
+                    plt.axhline(0, color="black", lw=1)
+                    plt.axvline(0, color="black", lw=1)
+                    plt.grid(True, alpha=0.3)
+                    # plt.show()
+                    plt.savefig("Phase Analysis.pdf", format="pdf", bbox_inches="tight")
+                    print(
+                        f"Número de puntos críticos de la FHR -> {len(np.where(np.diff(np.sign(y_prima)) != 0)[0])}"
+                    )
+
+            if get_enery_info:
+                # Asumiendo masa m = 1 para simplificar la analogía física
+
+                # Energía Cinética: 0.5 * v^2
+                energia_cinetica = 0.5 * (y_suave**2)
+
+                # Energía Potencial: 0.5 * a^2
+                energia_potencial = 0.5 * (y_prima**2)
+
+                # Energía Total (Mecánica) Em = Ec + Ep
+                energia_total = energia_cinetica + energia_potencial
+
+                # Energía Cinética
+                max_ec = np.max(energia_cinetica)
+                min_ec = np.min(energia_cinetica)
+
+                # Energía Potencial
+                max_ep = np.max(energia_potencial)
+                min_ep = np.min(energia_potencial)
+
+                # Energía Total
+                max_en = np.max(energia_total)
+                min_en = np.max(energia_total)
+
+                print(f"Kinetic Energy (Ec) -> Max: {max_ec:e}, Min: {min_ec:e}")
+                print(f"Potential Energy (Ep) -> Max: {max_ep:e}, Min: {min_ep:e}")
+                print(f"Total Energy (Em) -> Max: {max_en:e}, Min: {min_en:e}")
+
+            if get_area_fase:
+                # Se calcula el vector escalar entre el punto actual y el siguiente, lo que me
+                # da el area entre los vectores (paralelogramo), al dividirlo entre 2 tengo el area del triángulo
+
+                # si el angulo entre los vectores es mayor que 90 y menor que 270 será negativo
+
+                area = 0.5 * np.abs(
+                    np.dot(y_suave[:-1], y_prima[1:])
+                    - np.dot(y_suave[1:], y_prima[:-1])
+                )
+                print(f"Area de la curva -> {area:e}")
+
+            if get_len_curva:
+                dx = np.diff(y_suave)
+                dy = np.diff(y_prima)
+                distancias = np.sqrt(dx**2 + dy**2)
+
+                # en el caso de que la señal original tenga nan vamos a quitar
+
+                print(f"Longitud de la curva -> {np.sum(distancias):e}")
+
+            if get_mechanic_energy:
+
+                if not get_enery_info:
+                    energia_cinetica = 0.5 * (y_suave**2)
+                    energia_potencial = 0.5 * (y_prima**2)
+                    energia_total = energia_cinetica + energia_potencial
+
+                return np.max(energia_total)
 
     ## ---------------------------------------------
     ## ------------------ GENERAL ------------------
@@ -283,7 +671,7 @@ class CTG:
             None
         """
 
-        t = self._time
+        t = self._time / 60
         FHR = self.fhr
 
         # Check if the entire FHR signal is NaN
@@ -294,29 +682,35 @@ class CTG:
         baseline = self._baseline
 
         # Create a figure for the plot
-        plt.figure(figsize=(10, 3))
+        plt.figure(figsize=(18, 6))
 
         # Plot FHR and baseline
-        plt.plot(t, FHR, color="black", label="FHR")
-        plt.plot(t, baseline, color="blue", label="Baseline")
+        # plt.plot(t, FHR, color="black", label="FHR")
+        plt.plot(t, self.fhr, linewidth=1.5, color="black")
+        plt.plot(t, baseline, linewidth=2, color="#2849C1", label="Baseline")
 
         # Fill background regions based on clinical interpretation
-        plt.fill_between(t, 110, 160, color="green", alpha=0.3, label="N")
-        plt.fill_between(t, 100, 110, color="orange", alpha=0.3)
-        plt.fill_between(t, 160, 200, color="orange", alpha=0.3, label="S")
-        plt.fill_between(t, 0, 100, color="red", alpha=0.3, label="P")
+        plt.fill_between(t, 110, 160, color="#388E3C", alpha=0.4, label="N")
+        plt.fill_between(t, 100, 110, color="#F58220", alpha=0.4)
+        plt.fill_between(t, 160, 250, color="#F58220", alpha=0.4, label="S")
+        plt.fill_between(t, 0, 100, color="#E04A3F", alpha=0.4, label="P")
 
         # Configure axis labels and limits
-        plt.xlabel("Time (sec)")
-        plt.ylabel("FHR (bpm)")
-        plt.ylim(np.nanmin(FHR) - 5, np.nanmax(FHR) + 5)
+        plt.xlabel("Time (min)", fontsize=25)
+        plt.ylabel("FHR (bpm)", fontsize=25)
+        # plt.ylim(np.nanmin(FHR) - 5, np.nanmax(FHR) + 5)
+        plt.ylim(50, 200)
+
+        plt.xticks(np.linspace(0, 30, 5))
+        plt.tick_params(axis="both", labelsize=25)
 
         # Add title, legend, and grid
-        plt.title("FHR and Baseline")
-        plt.legend(loc="upper left")
-        plt.grid(True)
+        # plt.title("FHR and Baseline")
+        # plt.legend(loc="upper left", fontsize=20)
+        # plt.grid(True)
 
         # Display the plot
+        plt.savefig("baseline_graph_extra.pdf", format="pdf", bbox_inches="tight")
         plt.show()
 
     def _get_variability_graph(self, center: bool = False):
@@ -344,6 +738,8 @@ class CTG:
         window_size = int(self.frequency * 60)
         min_periods = int(self.NOT_NAN_PERC * window_size)
 
+        time = self._time / 60
+
         # Rolling max and min values over 1-minute windows
         rolling_fhr = FHR.rolling(
             window=window_size, min_periods=min_periods, center=center
@@ -355,49 +751,49 @@ class CTG:
         variability_bandwidth = max_fhr - min_fhr
 
         # Create figure
-        plt.figure(figsize=(10, 5))
+        plt.figure(figsize=(18, 6))
 
         # Plot the FHR signal
-        plt.plot(self._time, FHR, label="FHR", color="black", alpha=0.6)
+        plt.plot(time, FHR, label="FHR", color="black", alpha=0.6)
 
         # Plot 1-minute max and min FHR
         plt.plot(
-            self._time,
+            time,
             max_fhr,
             label="Max FHR (1 min)",
-            color="red",
+            color="#E04A3F",
             linestyle="--",
-            alpha=0.5,
+            alpha=1,
         )
         plt.plot(
-            self._time,
+            time,
             min_fhr,
             label="Min FHR (1 min)",
-            color="blue",
+            color="#2849C1",
             linestyle="--",
-            alpha=0.5,
+            alpha=1,
         )
 
         # Plot the variability bandwidth
         plt.plot(
-            self._time,
+            time,
             variability_bandwidth,
             label="FHR Variability (1 min)",
-            color="green",
+            color="#388E3C",
         )
 
         # Fill background for normal and pathological variability
         max_fill = np.nanmax(FHR) + 5
         plt.fill_between(
-            self._time,
+            time,
             0,
             max_fill,
             where=(self._variability_labels == 0),
-            color="lightgreen",
-            alpha=0.5,
+            color="#388E3C",
+            alpha=0.4,
         )
         plt.fill_between(
-            self._time,
+            time,
             -1,
             max_fill,
             where=(self._variability_labels == 2),
@@ -405,13 +801,16 @@ class CTG:
             alpha=0.5,
         )
 
+        plt.tick_params(axis="both", labelsize=25)
+
         # Axis labels, title, legend, and layout
-        plt.xlabel("Time (min)")
-        plt.ylabel("FHR (bpm)")
-        plt.title("FHR Variability (1-min bandwidth)")
+        plt.xlabel("Time (min)", fontsize=25)
+        plt.ylabel("FHR (bpm)", fontsize=25)
+        # plt.title("FHR Variability (1-min bandwidth)", fontsize=20)
         plt.legend(loc="upper right")
-        plt.grid(True)
+        # plt.grid(True)
         plt.tight_layout()
+        plt.savefig("variability_graph_extra.pdf", format="pdf", bbox_inches="tight")
         plt.show()
 
     def get_contractions_graph(
@@ -424,7 +823,7 @@ class CTG:
         contraction_center=True,
     ):
 
-        t = self._time
+        t = self._time / 60
         UC = self.uc
         is_contraction = self._get_contraction_condition(
             time_shift=contraction_time_shift,
@@ -434,43 +833,59 @@ class CTG:
             center=contraction_center,
         )
 
-        plt.figure(figsize=(15, 5))
+        plt.figure(figsize=(18, 6))
         plt.plot(t, UC, label="UC", color="black")
 
-        is_contraction = is_contraction.fillna(False)
+        # is_contraction = is_contraction.fillna(False)
+        is_contraction = np.where(
+            (is_contraction == "NaN") | (is_contraction == "None"),
+            False,
+            is_contraction,
+        )
         in_condition = False
         start = None
 
+        # for i in range(len(is_contraction)):
+        #     if (
+        #         is_contraction.iloc[i] and not in_condition
+        #     ):  # Comienza una serie de True
+        #         in_condition = True
+        #         start = t[i]
+        #     elif (
+        #         not is_contraction.iloc[i] and in_condition
+        #     ):  # Termina una serie de True
+        #         in_condition = False
+        #         end = t[i]
+        #         plt.axvspan(start, end, color="blue", alpha=0.5)
+
         for i in range(len(is_contraction)):
-            if (
-                is_contraction.iloc[i] and not in_condition
-            ):  # Comienza una serie de True
+            if is_contraction[i] and not in_condition:  # Comienza una serie de True
                 in_condition = True
                 start = t[i]
-            elif (
-                not is_contraction.iloc[i] and in_condition
-            ):  # Termina una serie de True
+            elif not is_contraction[i] and in_condition:  # Termina una serie de True
                 in_condition = False
                 end = t[i]
-                plt.axvspan(start, end, color="blue", alpha=0.5)
+                # Aprovecho para sugerirte cambiar el color al "Azul acoplado" que elegimos antes ;)
+                plt.axvspan(start, end, color="#2849C1", alpha=0.4)
 
         # Caso especial: si termina en True, cerramos al final
         if in_condition:
             plt.axvspan(start, t.iloc[-1], color="blue", alpha=0.5)
 
+        plt.tick_params(axis="both", labelsize=20)
+
         # plt.title("Contractions in UC")
-        plt.xlabel("Time (min)")
-        plt.ylabel("Pressure (mmHg)")
-        plt.legend()
+        plt.xlabel("Time (min)", fontsize=20)
+        plt.ylabel("Pressure (mmHg)", fontsize=20)
         plt.grid(False)
         plt.tight_layout()
 
         # TODO 1: Borrar
-        plt.savefig("contraction_graph.png", dpi=300, bbox_inches="tight")
+        plt.savefig("contractions_graph.pdf", format="pdf", bbox_inches="tight")
 
         plt.show()
 
-    def plot_ctg(self):
+    def plot_ctg(self, desplazamiento_fhr=0):
         """
         Plot the fetal heart rate (FHR) and uterine contraction (UC) signals in two time segments.
 
@@ -489,6 +904,8 @@ class CTG:
             None: Displays a matplotlib figure with 4 subplots (FHR and UC for two halves).
         """
 
+        # TODO: Añadir la opción de desplazamiento
+
         # Split signal length in half
         mid = len(self.fhr) // 2
 
@@ -497,40 +914,100 @@ class CTG:
         uc1, uc2 = self.uc.iloc[:mid], self.uc.iloc[mid:]
 
         # Create 4 vertically stacked subplots (FHR and UC for both halves)
-        _, axs = plt.subplots(4, 1, figsize=(20, 12), sharex=False)
+        _, axs = plt.subplots(4, 1, figsize=(25, 12), sharex=False)
 
         # Plot FHR (first half)
         ax1 = axs[0]
         ax1.plot(fhr1.index / 60, fhr1.values, color="black", label="FHR")
-        ax1.set_ylabel("FHR")
+        ax1.set_ylabel("FHR", fontsize=14)
         ax1.grid(True)
+        ax1.tick_params(axis="both", labelsize=13)
 
         # Plot UC (first half)
         ax2 = axs[1]
         ax2.plot(uc1.index / 60, uc1.values, color="blue", alpha=0.6, label="UC")
-        ax2.set_ylabel("UC")
+        ax2.set_ylabel("UC", fontsize=14)
         ax2.grid(True)
+        ax2.tick_params(axis="both", labelsize=13)
 
         # Plot FHR (second half)
         ax3 = axs[2]
         ax3.plot(fhr2.index / 60, fhr2.values, color="black", label="FHR")
-        ax3.set_ylabel("FHR")
+        ax3.set_ylabel("FHR", fontsize=14)
         ax3.grid(True)
+        ax3.tick_params(axis="both", labelsize=13)
 
         # Plot UC (second half)
         ax4 = axs[3]
         ax4.plot(uc2.index / 60, uc2.values, color="blue", alpha=0.6, label="UC")
-        ax4.set_xlabel("Time (sec)")
-        ax4.set_ylabel("UC")
+        ax4.set_xlabel("Time (min)", fontsize=14)
+        ax4.set_ylabel("UC", fontsize=14)
         ax4.grid(True)
+        ax4.tick_params(axis="both", labelsize=13)
 
         # Add a global title with the CTG identifier
         title = "CTG: " + str(self.id)
-        plt.suptitle(title, fontsize=16)
+        plt.suptitle(title, fontsize=18)
 
         # Adjust layout to leave space for the main title
         plt.tight_layout(rect=[0, 0, 1, 0.99])
+
+        plt.savefig("ctg_preprocess.pdf", format="pdf", bbox_inches="tight")
+
         plt.show()
+
+    def plot_fhr(self, title_eje_x=False, save_name=None):
+
+        ## DESCOMENTAR PARA FIGURAS ARTÍCULO
+        plt.figure(figsize=(24, 6))
+        plt.plot(
+            self._time / 60,
+            self.fhr,
+            color="#2849C1",
+            linewidth=1.5,
+            alpha=0.8,
+        )
+
+        plt.ylim(0, 200)
+        plt.grid(True, which="both", axis="y", linestyle="--", alpha=0.5)
+
+        if title_eje_x:
+            plt.xlabel("Time (min)", fontsize=25)
+        else:
+            plt.xticks([])
+
+        plt.tick_params(axis="both", labelsize=25)
+
+        plt.savefig(save_name, format="pdf", bbox_inches="tight")
+
+        # # Split signal length in half
+        # mid = len(self.fhr) // 2
+
+        # # Divide the FHR signal into first and second halves
+        # fhr1, fhr2 = self.fhr.iloc[:mid], self.fhr.iloc[mid:]
+
+        # # Create 2 vertically stacked subplots (FHR for both halves)
+        # _, axs = plt.subplots(2, 1, figsize=(24, 7), sharex=False)
+
+        # # Plot FHR (first half)
+        # ax1 = axs[0]
+        # ax1.plot(fhr1.index / 60, fhr1.values, color="black", label="FHR")
+        # ax1.set_ylabel("FHR", fontsize=14)
+        # ax1.tick_params(axis="both", labelsize=13)
+
+        # # Plot FHR (second half)
+        # ax2 = axs[1]
+        # ax2.plot(fhr2.index / 60, fhr2.values, color="black", label="FHR")
+        # ax2.set_xlabel("Time (min)", fontsize=14)
+        # ax2.set_ylabel("FHR", fontsize=14)
+        # ax2.tick_params(axis="both", labelsize=13)
+
+        # # Adjust layout to leave space for the main title
+        # plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+        # plt.savefig(save_name, format="pdf", bbox_inches="tight")
+
+        # plt.show()
 
     ## ----------------------------------------------------
     ## --------------- RULES FIGO METODS ------------------
@@ -632,7 +1109,6 @@ class CTG:
         base_labels = self._get_baseline_labels(
             window_min_size=window_time_baseline, graph=baseline_graph, center=center
         )
-
         decelerations_labels = self._get_decelerations_labels(
             center=center,
             window_time_baseline=window_time_baseline,
@@ -1081,35 +1557,38 @@ class CTG:
             None
         """
 
-        t = self._time
+        t = self._time / 60
         baseline_labels = self._baseline_labels
 
         # Set up the figure and axis for plotting
         if grid == None:
-            _, ax = plt.subplots(figsize=(8, 3))
+            _, ax = plt.subplots(figsize=(18, 6))
         else:
             ax = plt.subplot(grid)
 
         # Plot the FHR signal
-        ax.set_title("BASELINE")
-        ax.plot(t, self.fhr, color="black")
+        ax.set_title("BASELINE", fontsize=25)
+        ax.plot(t, self.fhr, linewidth=1.5, color="black")
 
         # Highlight different baseline classification zones
         ax.fill_between(
-            t, 0, 250, where=(baseline_labels == 0), color="lime", alpha=0.5
+            t, 0, 250, where=(baseline_labels == 0), color="#388E3C", alpha=0.4
         )  # Normal
         ax.fill_between(
-            t, -1, 250, where=(baseline_labels == 1), color="darkorange", alpha=0.5
+            t, -1, 250, where=(baseline_labels == 1), color="#F58220", alpha=0.4
         )  # Suspicious
         ax.fill_between(
-            t, -1, 250, where=(baseline_labels == 2), color="red", alpha=0.5
+            t, -1, 250, where=(baseline_labels == 2), color="#E04A3F", alpha=0.4
         )  # Pathological
 
         # Configure axis ticks and labels
-        plt.xticks(np.linspace(t.min(), t.max(), 5))
-        plt.ylabel("FHR (bpm)")
-        plt.xlabel("Time (sec)")
-        plt.ylim(-1, 250)
+        plt.xticks(np.linspace(0, 30, 5))
+        ax.tick_params(axis="both", labelsize=25)
+        plt.ylabel("FHR (bpm)", fontsize=25)
+        plt.xlabel("Time (min)", fontsize=25)
+        plt.ylim(50, 200)
+
+        plt.savefig("baseline_graph.pdf", format="pdf", bbox_inches="tight")
 
         # Show the plot if requested
         if show == 0:
@@ -1134,35 +1613,36 @@ class CTG:
             None
         """
 
-        t = self._time
+        t = self._time / 60
         s1 = self.fhr
         s2 = self._decelerations_labels
-
-        UC = self.uc  # TODO: Quitar
 
         # Create new figure and axis if no grid is specified
         if grid == None:
             # _, ax = plt.subplots(figsize=(8, 3))
-            _, ax = plt.subplots(figsize=(15, 5))
+            _, ax = plt.subplots(figsize=(18, 6))
         else:
             ax = plt.subplot(grid)
 
-        ax.set_title("DECELERATIONS")
-        ax.plot(t, s1, color="black")
+        ax.set_title("DECELERATIONS", fontsize=25)
+        ax.plot(t, s1, linewidth=1.5, color="black")
 
         # if UC is not None:
         #     ax.plot(t, UC, color="grey")
 
         # Highlight different deceleration categories
-        ax.fill_between(t, 0, 250, where=(s2 == 0), color="lime", alpha=0.5)
-        ax.fill_between(t, -1, 250, where=(s2 == 1), color="darkorange", alpha=0.5)
-        ax.fill_between(t, -1, 250, where=(s2 == 2), color="red", alpha=0.5)
+        ax.fill_between(t, 0, 250, where=(s2 == 0), color="#388E3C", alpha=0.4)
+        ax.fill_between(t, -1, 250, where=(s2 == 1), color="#F58220", alpha=0.4)
+        ax.fill_between(t, -1, 250, where=(s2 == 2), color="#E04A3F", alpha=0.4)
 
-        plt.xticks(np.linspace(t.min(), t.max(), 5))
+        plt.xticks(np.linspace(0, 30, 5))
+        ax.tick_params(axis="both", labelsize=25)
 
-        plt.ylabel("FHR (bpm)")
-        plt.xlabel("Time (sec)")
-        plt.ylim(-1, 250)
+        plt.ylabel("FHR (bpm)", fontsize=25)
+        plt.xlabel("Time (min)", fontsize=25)
+        plt.ylim(50, 200)
+
+        plt.savefig("deceleration_graph.pdf", format="pdf", bbox_inches="tight")
 
         # Display plot if requested
         if show == 0:
@@ -1193,33 +1673,34 @@ class CTG:
         """
 
         s2 = self._variability_labels
-        t = self._time
+        t = self._time / 60
 
         # Setup figure and axis depending on grid argument
         if grid == None:
             # _, ax = plt.subplots(figsize=(8, 3))
-            _, ax = plt.subplots(figsize=(15, 5))
+            _, ax = plt.subplots(figsize=(18, 6))
         else:
             ax = plt.subplot(grid)
 
-        ax.set_title("VARIABILITY")
+        ax.set_title("VARIABILITY", fontsize=25)
 
         # Plot the FHR signal in black
         ax.plot(t, self.fhr, color="black")
 
         # Highlight regions based on variability classification
-        ax.fill_between(t, 0, 250, where=(s2 == 0), color="lime", alpha=0.5)
-        ax.fill_between(t, -1, 250, where=(s2 == 1), color="darkorange", alpha=0.5)
-        ax.fill_between(t, -1, 250, where=(s2 == 2), color="red", alpha=0.5)
+        ax.fill_between(t, 0, 250, where=(s2 == 0), color="#388E3C", alpha=0.4)
+        ax.fill_between(t, -1, 250, where=(s2 == 1), color="#F58220", alpha=0.4)
+        ax.fill_between(t, -1, 250, where=(s2 == 2), color="#E04A3F", alpha=0.4)
 
         # Configure axes ticks and labels
         plt.xticks(np.linspace(t.min(), t.max(), 5))
-        plt.ylabel("FHR (bpm)")
-        plt.xlabel("Time (sec)")
-        plt.ylim(-1, 250)
+        ax.tick_params(axis="both", labelsize=25)
+        plt.ylabel("FHR (bpm)", fontsize=25)
+        plt.xlabel("Time (min)", fontsize=25)
+        plt.ylim(50, 200)
 
         # TODO 1: Borrar
-        plt.savefig("inc_var_cond.png", dpi=300, bbox_inches="tight")
+        plt.savefig("variability_graph.pdf", format="pdf", bbox_inches="tight")
 
         # Show plot immediately if requested
         if show == 0:
@@ -1244,43 +1725,34 @@ class CTG:
             None
         """
 
-        the_grid = GridSpec(3, 2)
-        grid_b = the_grid[0, 0]
-        grid_d = the_grid[1, 0]
-        grid_v = the_grid[2, 0]
-        show = 1
+        plt.figure(figsize=(18, 6))
 
-        plt.figure(figsize=(14, 12))
-
-        # Plot baseline, decelerations, and variability in respective subplot positions
-        self._baseline_graph(show, grid_b)
-        self._decelerations_graph(show, grid_d)
-        self._variability_graph(show, grid_v)
-
-        t = self._time
-        s1 = self.fhr
+        t = self._time / 60
         s2 = self._conclusion_labels
 
-        # Create subplot for final conclusion
-        ax = plt.subplot(the_grid[1, 1])
-        ax.set_title("CONCLUSION")
+        # Plot the FHR signal
+        plt.title("CONCLUSION", fontsize=25)
+        plt.plot(t, self.fhr, linewidth=1.5, color="black")
 
-        # Plot FHR signal
-        ax.plot(t, s1, color="black")
+        # Highlight different baseline classification zones
+        plt.fill_between(
+            t, 0, 250, where=(s2 == 0), color="#388E3C", alpha=0.4
+        )  # Normal
+        plt.fill_between(
+            t, -1, 250, where=(s2 == 1), color="#F58220", alpha=0.4
+        )  # Suspicious
+        plt.fill_between(
+            t, -1, 250, where=(s2 == 2), color="#E04A3F", alpha=0.4
+        )  # Pathological
 
-        # Fill background with color-coded conclusion labels
-        ax.fill_between(t, 0, 250, where=(s2 == 0), color="lime", alpha=0.5)
-        ax.fill_between(t, -1, 250, where=(s2 == 1), color="darkorange", alpha=0.5)
-        ax.fill_between(t, -1, 250, where=(s2 == 2), color="red", alpha=0.5)
-
-        # Configure ticks and labels
+        # Configure axis ticks and labels
         plt.xticks(np.linspace(t.min(), t.max(), 5))
-        plt.ylabel("FHR (bpm)")
-        plt.xlabel("Time (sec)")
-        plt.ylim(-1, 250)
+        plt.tick_params(axis="both", labelsize=25)
+        plt.ylabel("FHR (bpm)", fontsize=25)
+        plt.xlabel("Time (min)", fontsize=25)
+        plt.ylim(50, 200)
 
-        # Adjust vertical spacing between subplots
-        plt.subplots_adjust(hspace=0.3)
+        plt.savefig("conclusion_graph.pdf", format="pdf", bbox_inches="tight")
 
         # Show the full figure
         plt.show()
@@ -1513,9 +1985,14 @@ class CTG:
 
         for i in range(1, len(condition)):
             # Check if current value is True and previous is False or NaN (start of a new True event)
-            if condition.iloc[i] == True and (
-                condition.iloc[i - 1] == False
-                or np.isnan(condition.iloc[i - 1]) == True
+            # if condition.iloc[i] == True and (
+            #     condition.iloc[i - 1] == False
+            #     or np.isnan(condition.iloc[i - 1]) == True
+            # ):
+
+            # Cambiado .iloc[i] por [i] y optimizadas las comparaciones
+            if condition[i] == 1.0 and (
+                condition[i - 1] == 0.0 or np.isnan(condition[i - 1])
             ):
 
                 # Calculate start index for extension
@@ -1524,12 +2001,12 @@ class CTG:
                 if start_window < 0:
                     # CAMBIO: condition.iloc[0:i] = np.ones(len(range(i)))
                     # If window goes beyond start, set all values from 0 up to i to True
-                    condition.iloc[0:i] = True
+                    condition[0:i] = True
 
                 else:
                     # CAMBIO: condition.iloc[start_window:i] = np.ones(window-1)
                     # Otherwise, set values from start_window to i-1 to True
-                    condition.iloc[start_window:i] = True
+                    condition[start_window:i] = True
 
         return condition
 
@@ -1576,10 +2053,17 @@ class CTG:
         corr_FHR_UC_X_min = fhr_rolling.corr(self.uc)
 
         # Condition is true where correlation drops below the threshold
-        repetitive_deceleration_condition = corr_FHR_UC_X_min < correlation_threshold
+        # repetitive_deceleration_condition = corr_FHR_UC_X_min < correlation_threshold
 
         # Preserve NaNs where correlation could not be computed
-        repetitive_deceleration_condition[np.isnan(corr_FHR_UC_X_min)] = np.nan
+        # repetitive_deceleration_condition[np.isnan(corr_FHR_UC_X_min)] = np.nan
+
+        # Condition is true (1.0), false (0.0), or NaN if correlation could not be computed
+        repetitive_deceleration_condition = np.where(
+            np.isnan(corr_FHR_UC_X_min),
+            np.nan,
+            (corr_FHR_UC_X_min < correlation_threshold).astype(float),
+        )
 
         # Extend the condition backward in time to cover the whole window
         repetitive_deceleration_condition = self._extend_condition_back(
@@ -1680,7 +2164,11 @@ class CTG:
         )
 
         # Keep NaNs where the deceleration duration could not be reliably computed
-        late_deceleration_condition[np.isnan(min_dec)] = np.nan
+        # late_deceleration_condition[np.isnan(min_dec)] = np.nan
+
+        late_deceleration_condition = np.where(
+            np.isnan(min_dec), np.nan, late_deceleration_condition
+        ).astype(object)
 
         # Extend the condition backward to cover the full deceleration period
         late_deceleration_condition = self._extend_condition_back(
@@ -1748,11 +2236,15 @@ class CTG:
             center=center,
         ).min()
 
-        # Condition is True where sustained rise above baseline exceeds the value threshold
-        contraction_condition = min_diff_uc > value_threshold
+        # # Condition is True where sustained rise above baseline exceeds the value threshold
+        # contraction_condition = min_diff_uc > value_threshold
 
-        # Preserve NaNs where contraction could not be evaluated
-        contraction_condition[np.isnan(min_diff_uc)] = np.nan
+        # # Preserve NaNs where contraction could not be evaluated
+        # contraction_condition[np.isnan(min_diff_uc)] = np.nan
+
+        contraction_condition = np.where(
+            np.isnan(min_diff_uc), np.nan, min_diff_uc > value_threshold
+        ).astype(object)
 
         # Extend the detected contraction period backward in time by the duration threshold
         contraction_condition = self._extend_condition_back(
@@ -1802,7 +2294,10 @@ class CTG:
         prolonged_deceleration_condition = (max_dec_X_min == 1) & (min_dec_X_min == 1)
 
         # Preserve NaNs where the window did not meet the minimum data requirement
-        prolonged_deceleration_condition[np.isnan(min_dec_X_min)] = np.nan
+        # prolonged_deceleration_condition[np.isnan(min_dec_X_min)] = np.nan
+        prolonged_deceleration_condition = np.where(
+            np.isnan(min_dec_X_min), np.nan, prolonged_deceleration_condition
+        ).astype(object)
 
         # Extend the condition backward to cover the duration of the prolonged deceleration
         prolonged_deceleration_condition = self._extend_condition_back(
@@ -1891,15 +2386,29 @@ class CTG:
         ).max()
 
         # Reduced variability in baseline segments (long duration)
-        red_var_base = max_FHR_bandwith_50_min < red_var_bandwith
-        red_var_base[np.isnan(max_FHR_bandwith_50_min)] = np.nan
+        # red_var_base = max_FHR_bandwith_50_min < red_var_bandwith
+        # red_var_base[np.isnan(max_FHR_bandwith_50_min)] = np.nan
+
+        red_var_base = np.where(
+            np.isnan(max_FHR_bandwith_50_min),
+            np.nan,
+            max_FHR_bandwith_50_min < red_var_bandwith,
+        ).astype(object)
+
         red_var_base = self._extend_condition_back(
             red_var_base, window=red_var_duration_baseline * 60 * freq
         )
 
         # Reduced variability during decelerations (short duration)
-        red_var_dec = (max_FHR_bandwith_3_min < red_var_bandwith) & (dec_cond == True)
-        red_var_base[np.isnan(max_FHR_bandwith_3_min)] = np.nan
+        # red_var_dec = (max_FHR_bandwith_3_min < red_var_bandwith) & (dec_cond == True)
+        # red_var_base[np.isnan(max_FHR_bandwith_3_min)] = np.nan
+
+        red_var_dec = np.where(
+            np.isnan(max_FHR_bandwith_3_min),
+            np.nan,
+            (max_FHR_bandwith_3_min < red_var_bandwith) & (dec_cond == True),
+        ).astype(object)
+
         red_var_dec = self._extend_condition_back(
             red_var_dec, window=red_var_duration_deceleration * 60 * freq
         )
@@ -1961,10 +2470,16 @@ class CTG:
         ).min()
 
         # Identify periods where even the minimum variability in the window exceeds the threshold
-        increased_variability_condition = min_FHR_bandwith_30_min > bandwidth_min
+        # increased_variability_condition = min_FHR_bandwith_30_min > bandwidth_min
 
         # Set NaN where rolling window results are unreliable (not enough data)
-        increased_variability_condition[np.isnan(min_FHR_bandwith_30_min)] = np.nan
+        # increased_variability_condition[np.isnan(min_FHR_bandwith_30_min)] = np.nan
+
+        increased_variability_condition = np.where(
+            np.isnan(min_FHR_bandwith_30_min),
+            np.nan,
+            min_FHR_bandwith_30_min > bandwidth_min,
+        ).astype(object)
 
         # Extend the condition backward to cover the full 30-minute window
         increased_variability_condition = self._extend_condition_back(
@@ -2143,3 +2658,8 @@ class CTG:
         )
 
         return early_deceleration_condition
+
+    def get_gaps_fhr(self):
+        # hacer
+
+        return -1

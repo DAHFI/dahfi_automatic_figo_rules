@@ -34,3 +34,5 @@ conda activate dahfi_figo_env
 
 
 
+### AÑADIR DISCLAIMERS:
+- Se da por hecho, que las ctgs que se añadan a un df_ctg tienen la misma frecuencia que el resto de las ctgs ya añadidas. Esta frecuencia esta definida en el config file 

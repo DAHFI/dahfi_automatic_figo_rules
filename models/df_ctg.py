@@ -1,39 +1,39 @@
 import sys
 from .ctg import CTG
 from collections import Counter
+import commentjson
 import numpy as np
 import pandas as pd
+import seaborn as sns
+import tensorflow as tf
 from matplotlib import pyplot as plt
 from sklearn.metrics import roc_curve, auc
 from typing import Union, Optional, Dict, Tuple
-
-# TODO: Repasar los comentarios de los docstring
+from config_methods import AppConfig
 
 
 class DF_CTG:
 
-    NORMAL = 0
-    SUSPICIOUS = 1
-    PATHOLOGICAL = 2
-
     def __init__(
         self,
-        freq,
-        MAX_TIME_FHR=250,
-        MIN_TIME_FHR=0,
-        MAX_TIME_UC=150,
-        MIN_TIME_UC=0,
+        config_file: str,
     ):
 
         self.ctgs = []
-        self.phs = []
-        self.freq = freq
+        # self.phs = []  # TODO: BORRAR
+        # self.clinical_data = []  # TODO: BORRAR
 
-        self.MAX_TIME_FHR = MAX_TIME_FHR
-        self.MIN_TIME_FHR = MIN_TIME_FHR
-        self.MAX_TIME_UC = MAX_TIME_UC
-        self.MIN_TIME_UC = MIN_TIME_UC
+        try:
+            with open("config.jsonc", "r", encoding="utf-8") as file:
+                config = AppConfig(commentjson.load(file))
+                self.config = config
 
+        except Exception as e:
+            print("ERROR! It was not possible to read the config file")
+            print(f"Error details: {e}")
+            self.config = None
+
+        ## --- VAR FOR SAVING RESULTS ---
         # self._base_labels
         # self._dec_labels
         # self._var_labels
@@ -41,35 +41,66 @@ class DF_CTG:
 
     def add_ctg(self, ctg: CTG) -> None:
         """
-        Add a CTG (Cardiotocography) object to the DF_CTG container.
-
-        This method checks that the frequency of the input CTG matches the internal
-        frequency of the DF_CTG instance before appending it and its corresponding PH value.
-        If the frequencies do not match, it raises a ValueError.
-
-        Args:
-            ctg (CTG): A CTG object containing FHR, UC, PH, and frequency information.
-
-        Returns:
-            None: This method does not return anything.
+        Add a CTG (Cardiotocography) object to the DF_CTG group.
         """
+        ctg.group = self  # Ahora forma parte de una familia 🥲
+        self.ctgs.append(ctg)
 
-        # Check that the frequency of the input CTG matches the instance frequency
-        if self.freq == ctg.frequency:
+    def read_ctgs_from_files(self) -> None:
+        # Variables to provide information on the progress of data reading
+        num_files_no_exist = 0
+        num_ctg_created = 0
+        max_num_data = (
+            self.config.freq * self.config.read.cut_min_read * 60
+        )  # 4 datos/sec * 60 sec/min * x min
 
-            # Append the CTG object and its corresponding PH value
-            self.ctgs.append(ctg)
-            self.phs.append(ctg.ph)
+        fhr_df = pd.read_csv(
+            self.config.data_folder_path + "fhr.csv", index_col=0, compression="gzip"
+        )
 
-        # Raise an error if frequencies do not match
-        else:
-            raise ValueError(
-                "ERROR: The frequency of the CTG is not equal to the frequency of DF_CTG (id: ",
-                ctg.id,
-                ")",
-            )
+        uc_df = pd.read_csv(
+            self.config.data_folder_path + "uc.csv", index_col=0, compression="gzip"
+        )
 
-    def new_ctg(self, fhr: pd.Series, uc: pd.Series, ph: float, id: int) -> None:
+        clinical_df = pd.read_csv(
+            self.config.data_folder_path + "clinical.csv",
+            index_col=0,
+            compression="gzip",
+        )
+
+        for index in fhr_df.index:
+            missing_sources = []
+            if index not in uc_df.index:
+                missing_sources.append("uc")
+            if index not in clinical_df.index:
+                missing_sources.append("clinical information")
+
+            if missing_sources:
+                num_files_no_exist += 1
+                missing_str = " and the ".join(missing_sources)
+                print(
+                    f"{num_files_no_exist}.- The {missing_str} for the ctg ({index}) does not exist. Skipping iteration."
+                )
+                continue
+
+            fhr = fhr_df.loc[index][:max_num_data]
+            uc = uc_df.loc[index][:max_num_data]
+            clinical_data = clinical_df.loc[index]
+
+            ph = float(clinical_data["PH"])
+
+            self.new_ctg(fhr, uc, clinical_data, ph, index)
+            num_ctg_created += 1
+            print(f"{index} created! Total success: {num_ctg_created}")
+
+    def new_ctg(
+        self,
+        fhr: pd.Series,
+        uc: pd.Series,
+        clinical_data: pd.Series,
+        ph: float,
+        id: int,
+    ) -> None:
         """
         Create a new CTG (Cardiotocography) object with given FHR and UC signals, and append it to the CTG list.
 
@@ -92,20 +123,49 @@ class DF_CTG:
 
         # Create a new CTG instance with given data and class parameters
         ctg = CTG(
-            fhr=fhr,
-            uc=uc,
-            freq=self.freq,
+            fhr=fhr.to_numpy(),  # We're switching to NumPy because the indices will be changed.
+            uc=uc.to_numpy(),
+            clinical_data=clinical_data,
             ph=ph,
             id=id,
-            MAX_TIME_FHR=self.MAX_TIME_FHR,
-            MIN_TIME_FHR=self.MIN_TIME_FHR,
-            MAX_TIME_UC=self.MAX_TIME_UC,
-            MIN_TIME_UC=self.MIN_TIME_UC,
+            group=self,
         )
 
         # Append the new CTG and its pH value to the lists
         self.ctgs.append(ctg)
-        self.phs.append(ctg.ph)
+        # self.phs.append(ctg.ph)
+
+    ## ----------------------------------------------
+    ## ------------ GET DATA TF STYLE ---------------
+
+    def get_tf_ctgs(self):
+        """
+        Obtener los vectores (tensorflow) para entrenar modelos.
+        La forma de los vectores es :
+            X -> TensorShape([552, 2, 7200])
+            y -> TensorShape([552])
+
+        """
+        X_list = []
+
+        y = tf.where(tf.convert_to_tensor(self.phs) > 7.2, 0, 1)
+
+        for ctg in self.ctgs:
+            df_combined = pd.concat([ctg.fhr, ctg.uc], axis=1)
+            X_list.append(df_combined.values)
+
+        X_padded = tf.keras.utils.pad_sequences(
+            X_list,
+            dtype="float32",
+            padding="pre",
+            value=0.0,
+        )
+
+        X = tf.transpose(
+            tf.convert_to_tensor(X_padded, dtype=tf.float32), perm=[0, 2, 1]
+        )
+
+        return X, y
 
     ## ----------------------------------------------
     ## --------------- TEST FUNCTIONS ---------------
@@ -167,7 +227,7 @@ class DF_CTG:
 
         Args:
             rules_type (str): Type of preprocessing rules to apply (supported: "FIGO").
-            cut_time (int, optional): Time threshold in seconds for cutting the signal. Defaults to 60.
+            cut_time (int, optional): Time threshold in MINUTES for cutting the signal. Defaults to 60.
             max_size_gaps (int, optional): Maximum allowed gap size in the signal. Defaults to 15.
             rm_tail_nan (bool, optional): Whether to remove trailing NaN values. Defaults to True.
 
@@ -190,6 +250,71 @@ class DF_CTG:
                     max_size_gaps=max_size_gaps,
                     rm_tail_nan=rm_tail_nan,
                 )
+
+    ## ---------------------------------------------
+    ## -------------- CORR FUNCTION ----------------
+
+    def get_corr(self, max_desplazamiento=5, graph=False):
+        # TODO: one_ctg_analisis borrar
+        # TODO: incluir graph
+
+        len_uc = len(self.ctgs[0].uc)
+        # eje_x = len_uc / (4 * 60)
+        eje_x = max_desplazamiento
+        contador_error = 0
+
+        # Creamos una figura con 2 filas y 1 columna. sharex=True hace que compartan el eje X.
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+        # Configuración del gráfico de ARRIBA (UC vs FHR)
+        ax1.set_ylim(-1.1, 0.75)
+        ax1.set_xlim(0, eje_x)
+        ax1.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax1.set_title("Correlación de la FHR y UC")
+        ax1.set_ylabel("Correlación (FHR)")
+        ax1.grid(True, alpha=0.3)
+
+        # Configuración del gráfico de ABAJO (UC vs FHR')
+        ax2.set_ylim(-0.26, 0.1)
+        ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax2.set_title("Correlación de la Derivada FHR' y UC")
+        ax2.set_xlabel("Desplazamiento en minutos")
+        ax2.set_ylabel("Correlación (FHR')")
+        ax2.grid(True, alpha=0.3)
+
+        # Pasamos ambos ejes a la función interna para que dibuje en los dos
+        for ctg in self.ctgs:
+            res = ctg.get_corr_fun(
+                ax1,
+                ax2,
+                contador_error,
+                one_ctg_analisis=False,
+                max_desplazamiento=max_desplazamiento,
+            )
+            if res == -1:
+                contador_error = contador_error + 1
+
+        # Ajusta el diseño para que los títulos y etiquetas no se solapen
+        fig.tight_layout()
+        fig.show()
+
+        print("Señales saltadas: ", contador_error, " / ", len(self.ctgs))
+
+    ## ---------------------------------------------
+    ## --------------- SMOOTHE METODS --------------
+
+    def smoothe(
+        self,
+        type_smoothe: str = "Fourier",
+    ):
+        """
+        Suavizamos las curvas FHR de las ctg. Para ellos se
+        utiliza la interpolación de Fourier.
+        """
+
+        if type_smoothe == "Fourier":
+            for ctg in self.ctgs:
+                ctg.smoothe(type_smoothe=type_smoothe)
 
     ## ---------------------------------------------
     ## --------------- RULES METODS ----------------
@@ -615,7 +740,7 @@ class DF_CTG:
             x <= ph_limit for x in self.phs
         ]  # BORRAR: Si el ph es menor que 7.2 (Patológico) lo guardamos como 1
 
-        plt.figure(figsize=(7, 6))  # TODO: Quitar
+        plt.figure(figsize=(12, 12))  # TODO: Quitar
 
         plt.plot([0, 1], [0, 1], "k--", label="Random")
 
@@ -629,17 +754,20 @@ class DF_CTG:
             plt.plot(
                 fpr,
                 tpr,
-                color="palevioletred",
+                color="#2849C1",
                 # label="ROC curve %s (AUC = %0.2f)" % ("conclusion", roc_auc),
                 label="ROC Automatic Model (AUC = %0.2f)" % roc_auc,
             )
+
+            plt.fill_between(fpr, 0, tpr, color="#2849C1", alpha=0.3)
+
         else:
 
             color = {
-                "baseline": "palevioletred",
-                "variability": "yellowgreen",
-                "deceleration": "sandybrown",
-                "conclusion": "steelblue",
+                "baseline": "#2849C1",
+                "variability": "#E04A3F",
+                "deceleration": "#388E3C",
+                "conclusion": "#F58220",
             }
 
             for key, value in data_perc.items():
@@ -657,16 +785,180 @@ class DF_CTG:
                     fpr,
                     tpr,
                     color=color[key],
+                    linewidth=1.5,
                     label="ROC curve %s (AUC = %0.2f)" % (key, roc_auc),
                 )
 
         plt.xlim([0.0, 1.0])
         plt.ylim([0.0, 1.0])
-        plt.xlabel("FPR")
-        plt.ylabel("TPR")
-        plt.title(title)
-        plt.legend(loc="lower right")
 
-        save_name = "curve_model.png"
+        plt.xticks(fontsize=25)
+        plt.yticks(np.arange(0.2, 1.2, 0.2), fontsize=25)
 
-        plt.savefig(save_name, dpi=300, bbox_inches="tight")
+        plt.xlabel("False Positive Rate", fontsize=25)
+        plt.ylabel("True Positive Rate", fontsize=25)
+
+        plt.title(title, fontsize=25)
+        # plt.legend(loc="lower right", fontsize=15)
+
+        # Leyenda debajo de la gráfica
+        # plt.legend(
+        #     loc="upper center",  # posición de referencia
+        #     bbox_to_anchor=(0.5, -0.15),  # 0.5 = centro horizontal, -0.15 = fuera abajo
+        #     ncol=1,  # número de columnas en la leyenda
+        #     fontsize=14,
+        # )
+
+        plt.legend(
+            loc="lower right",  # Posición fija dentro del recuadro
+            ncol=1,  # Una sola columna
+            fontsize=20,
+        )
+
+        save_name = "curve_model.pdf"
+
+        # Save plot
+        plt.savefig(save_name, format="pdf", bbox_inches="tight")
+
+    ## ---------------------------------------------
+    ## ------------- GRAPH FUNCTION ----------------
+
+    def ph_histogram(self):
+        # 2. Configurar el tamaño de la imagen alargada (como en tus gráficas anteriores)
+        # Nota: Volví a poner (12, 4) por si querías mantener el formato alargado anterior,
+        # si lo quieres totalmente cuadrado puedes regresar a (12, 12).
+        plt.figure(figsize=(12, 8))
+
+        intervalos_columnas = np.arange(6.9, 7.51, 0.02)
+
+        # 3. Dibujar el histograma de la LÍSTA pasando los intervalos manuales
+        plt.hist(
+            self.phs,
+            bins=intervalos_columnas,
+            color="#2849C1",
+            edgecolor="white",
+            alpha=0.6,
+        )
+
+        # Línea vertical clavada en el borde de la columna
+        plt.axvline(
+            x=7.2,
+            color="#E04A3F",
+            linestyle="--",
+            linewidth=2,
+            label="pH = 7.2",
+        )
+        # ============================================================
+
+        # 4. Forzar el intervalo del eje X
+        plt.xlim(6.9, 7.5)
+        plt.xticks(np.arange(7, 7.41, 0.1))
+
+        # 5. Nombres de los ejes y títulos grandes
+        plt.xlabel("pH values", fontsize=25)
+        plt.ylabel("Frequency", fontsize=25)
+
+        # Añadir la leyenda para que se vea qué significa la línea roja
+        plt.legend(loc="upper right", fontsize=25)
+        plt.tick_params(axis="both", labelsize=20)
+
+        # 7. Detalles visuales y cuadrícula de fondo
+        plt.tight_layout()
+
+        # 8. Guardar opcionalmente para tu LaTeX o mostrar
+        plt.savefig("pH_histogram.pdf", format="pdf", bbox_inches="tight")
+        plt.show()
+
+    # 2. Función para clasificar cada pH según tus reglas clínicas
+    def clasificar_ph(self):
+
+        # 1. Crear el DataFrame con tu lista de phs
+        df = pd.DataFrame({"pH": self.phs})
+
+        # 2. Definir las condiciones utilizando las columnas del DataFrame
+        condiciones = [
+            df["pH"] < 7.15,
+            (df["pH"] >= 7.15) & (df["pH"] <= 7.20),
+            df["pH"] > 7.20,
+        ]
+
+        # 3. Definir las etiquetas que corresponden a cada condición en el mismo orden
+        etiquetas = [
+            "Pathological",
+            "Suspicious",
+            "Normal",
+        ]
+
+        # 4. Crear la columna 'Category' sin usar funciones intermedias
+        df["Category"] = np.select(condiciones, etiquetas, default="Normal")
+
+        # Ordenar las categorías para que aparezcan en un orden clínico lógico en el gráfico
+        orden_categorias = [
+            "Normal",
+            "Suspicious",
+            "Pathological",
+        ]
+
+        # Definir tu paleta de colores acoplada exacta
+        # colores_paleta = {
+        #     "Normal": "#2849C1",  # Tu Azul
+        #     "Suspicious": "#F58220",  # Tu Naranja
+        #     "Pathological": "#E04A3F",  # Tu Rojo
+        # }
+
+        # 4. Configurar el tamaño de la imagen (Formato estándar/cuadrado para boxplots)
+        plt.figure(figsize=(12, 8))
+
+        # 5. Dibujar el gráfico de cajas con Seaborn
+        sns.boxplot(
+            data=df,
+            x="Category",
+            y="pH",
+            order=orden_categorias,
+            color="#2849C1",
+            width=0.5,
+            fliersize=4,  # Tamaño de los puntos atípicos (outliers)
+            boxprops=dict(alpha=0.6),
+        )
+
+        # 6. Añadir las líneas de umbral horizontales en el fondo para validar visualmente
+        plt.axhline(
+            y=7.15,
+            color="#E04A3F",
+            linestyle="--",
+            alpha=0.6,
+            linewidth=1.5,
+            label="pH = 7.15",
+        )
+        plt.axhline(
+            y=7.20,
+            color="#F58220",
+            linestyle="--",
+            alpha=0.6,
+            linewidth=1.5,
+            label="pH = 7.20",
+        )
+
+        # 7. Personalizar nombres de los ejes y tamaños grandes para publicaciones
+        plt.xlabel(
+            "", fontsize=14
+        )  # Dejamos el eje X vacío porque las etiquetas de las cajas ya lo explican
+        plt.ylabel("pH Values", fontsize=25)
+        # plt.title(
+        #     "Distribution of pH Recordings by Clinical Category",
+        #     fontsize=15,
+        #     pad=15,
+        #     fontweight="bold",
+        # )
+
+        plt.legend(loc="upper right", fontsize=25, frameon=True)
+
+        # Estilo de cuadrícula sutil
+        # plt.grid(True, linestyle="--", alpha=0.4, axis="y")
+        plt.tight_layout()
+
+        plt.tick_params(axis="both", labelsize=25)
+
+        # 8. Guardar listo para tu documento de LaTeX
+        plt.savefig("ph_categories_boxplot.pdf", format="pdf", bbox_inches="tight")
+        plt.show()
