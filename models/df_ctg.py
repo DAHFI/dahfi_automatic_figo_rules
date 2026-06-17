@@ -87,11 +87,13 @@ class DF_CTG:
             uc = uc_df.loc[index][:max_num_data]
             clinical_data = clinical_df.loc[index]
 
-            ph = float(clinical_data["PH"])
+            ph = float(clinical_data["ph"])
 
             self.new_ctg(fhr, uc, clinical_data, ph, index)
             num_ctg_created += 1
             print(f"{index} created! Total success: {num_ctg_created}")
+
+        print(num_ctg_created, "ctg created!")
 
     def new_ctg(
         self,
@@ -133,12 +135,52 @@ class DF_CTG:
 
         # Append the new CTG and its pH value to the lists
         self.ctgs.append(ctg)
-        # self.phs.append(ctg.ph)
 
     ## ----------------------------------------------
     ## ------------ GET DATA TF STYLE ---------------
 
-    def get_tf_ctgs(self):
+    def get_ph_list(self) -> list:
+        """
+        Get the list of pH values for all stored CTGs.
+
+        Returns:
+            list: A list containing the pH values of all CTGs in the instance.
+        """
+        return [ctg.ph for ctg in self.ctgs]
+
+    def get_corr_curves_and_ph(self):
+        print("Para obtener estas curvas antes hay que ejecutar get_corr()")
+
+        corr_curves = []
+        ph = []
+
+        for ctg in self.ctgs:
+
+            if np.isnan(ctg.corr_fhr_uc).all():
+                continue
+
+            print(ctg.id)
+            corr_interp = np.interp(
+                np.arange(len(ctg.corr_fhr_uc)),
+                np.where(~np.isnan(ctg.corr_fhr_uc))[0],
+                ctg.corr_fhr_uc[~np.isnan(ctg.corr_fhr_uc)],
+            )
+
+            corr_curves.append(corr_interp)
+            ph.append(ctg.ph)
+
+        return corr_curves, [1 if x < 7.2 else 0 for x in ph]
+
+    def get_training_features(self):
+        """
+        Get the training features for all stored CTGs.
+
+        Returns:
+            list: A list containing the training features of all CTGs in the instance.
+        """
+        return [ctg.get_features() for ctg in self.ctgs]
+
+    def prepare_model_data(self):
         """
         Obtener los vectores (tensorflow) para entrenar modelos.
         La forma de los vectores es :
@@ -146,9 +188,13 @@ class DF_CTG:
             y -> TensorShape([552])
 
         """
-        X_list = []
 
-        y = tf.where(tf.convert_to_tensor(self.phs) > 7.2, 0, 1)
+        # pH values
+        phs = self.get_ph_list()
+        y = tf.where(tf.convert_to_tensor(phs) > 7.2, 0, 1)
+
+        # get the signals
+        X_list = []
 
         for ctg in self.ctgs:
             df_combined = pd.concat([ctg.fhr, ctg.uc], axis=1)
@@ -189,7 +235,7 @@ class DF_CTG:
         for length, amount in lengths.items():
             print(f"{amount} CTGs tienen fhr de longitud {length}")
 
-    def get_ctg_by_id(self, id: int) -> Optional[CTG]:
+    def get_ctg_by_id(self, id: str) -> Optional[CTG]:
         """
         Retrieve a CTG object by its identifier.
 
@@ -213,10 +259,6 @@ class DF_CTG:
 
     def preprocess_ctgs(
         self,
-        rules_type: str,
-        cut_time: int = 60,
-        max_size_gaps: int = 15,
-        rm_tail_nan: bool = False,
     ) -> None:
         """
         Preprocess stored CTG records based on specified rules.
@@ -235,21 +277,25 @@ class DF_CTG:
             None: This method modifies CTGs in place and does not return anything.
         """
 
+        prep_type = self.config.preprocessing.prep_type
+
+        new_ctgs_list = []
+
         # Define supported rule types
-        correct_rules_type = ["FIGO"]
+        correct_rules_type = ["FIGO", "FB_FOURIER"]
 
         # Validate input rule type
-        if rules_type not in correct_rules_type:
+        if prep_type not in correct_rules_type:
             raise ValueError("ERROR: It is not a valid preprocessing")
 
         # Apply FIGO-specific preprocessing to each CTG
-        if rules_type == "FIGO":
-            for ctg in self.ctgs:
-                ctg.preprocess_rules_figo(
-                    cut_time=cut_time,
-                    max_size_gaps=max_size_gaps,
-                    rm_tail_nan=rm_tail_nan,
-                )
+        for ctg in self.ctgs:
+            error_code = ctg.preprocess_signal()
+
+            if error_code == 0:
+                new_ctgs_list.append(ctg)
+
+        self.ctgs = new_ctgs_list
 
     ## ---------------------------------------------
     ## -------------- CORR FUNCTION ----------------
@@ -299,6 +345,10 @@ class DF_CTG:
         fig.show()
 
         print("Señales saltadas: ", contador_error, " / ", len(self.ctgs))
+
+    # Funciones del github de correlaciones --> BORRAR
+
+    # FIN BORRAR
 
     ## ---------------------------------------------
     ## --------------- SMOOTHE METODS --------------

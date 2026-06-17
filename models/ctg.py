@@ -1,35 +1,50 @@
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 import sys
+import commentjson
+from scipy.ndimage import label
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from typing import Union, Dict
 
+from config_methods import AppConfig
+
 import skfda
 import numpy as np
 import matplotlib.pyplot as plt
-from skfda.representation.basis import FourierBasis
+from skfda.representation.basis import Fourier
+
+from skfda import FDataGrid
+from skfda.preprocessing.missing import MissingValuesInterpolation
+
+
+from typing import TYPE_CHECKING
+
+# solo se lee para el autocompletado
+if TYPE_CHECKING:
+    from models.df_ctg import DF_CTG
 
 # TODO: Para los plots podría poner los times en minutos (queda más claro)
 
 
 class CTG:
 
-    # Label constants for classification
-    NORMAL = 0
-    SUSPICIOUS = 1
-    PATHOLOGICAL = 2
+    # # Label constants for classification
+    # NORMAL = 0
+    # SUSPICIOUS = 1
+    # PATHOLOGICAL = 2
 
     def __init__(
         self,
-        fhr,  # Fetal Heart Rate signal (list or array)
-        uc,  # Uterine Contraction signal (list or array)
-        clinical_data=None,
-        # freq,  # Frequency (Hz) TODO -> Lo borré
-        # Optional data
-        ph=None,  # Optional pH value
-        id=None,  # Optional ID for the record or patient
-        group=None
+        fhr: np.ndarray,  # Fetal Heart Rate signal (list or array)
+        uc: np.ndarray,  # Uterine Contraction signal (list or array)
+        clinical_data: pd.Series = None,
+        config_file: str = None,
+        ph: float = None,  # Optional pH value
+        id: int = None,  # Optional ID for the record or patient
+        group: DF_CTG = None,
         # Thresholds and constants
         # MAX_TIME_FHR=250,  # Maximum plausible FHR value
         # MIN_TIME_FHR=0,  # Minimum plausible FHR value
@@ -37,36 +52,50 @@ class CTG:
         # MIN_TIME_UC=0,  # Minimum plausible UC value
         # NOT_NAN_PERC=0.5,  # Minimum percentage of non-NaN values required in a window
     ):
-        self.group = None
 
-        if self.group is not None:
-            self.config = self.group.config
-        else: 
-            # TODO: Que lea su proprio archivo de config
-            print("TODOOOO")
+        self.group = group
 
-        # Ensure FHR and UC signals are of the same length
+        if group is None and config_file is None:
+            print(
+                "ERROR: If a group is not provided, a config_file path must be provided."
+            )
+
+        if group is not None:
+            self.config = group.config
+
+        else:
+            print("Reading config file from {config_file}...")
+            try:
+                with open("config.jsonc", "r", encoding="utf-8") as file:
+                    config = AppConfig(commentjson.load(file))
+                    self.config = config
+
+            except Exception as e:
+                print("ERROR! It was not possible to read the config file")
+                print(f"Error details: {e}")
+                self.config = None
+
+        freq = self.config.freq
+
         if len(fhr) != len(uc):
-            raise ValueError("ERROR: The size of the FHR and UC must be equal")
+            raise ValueError("ERROR: The size of the FHR and UC must be equal.")
 
-        # Define time axis based on frequency (in minutes)
         self._time = np.arange(0, len(fhr) / freq, 1 / freq)
-
-        # Store metadata and time-indexed signals as pandas Series
         self.id = id
-        self.fhr = pd.Series(data=fhr, index=self._time)
-        self.uc = pd.Series(data=uc, index=self._time)
+        self.fhr = np.array(fhr)
+        self.uc = np.array(uc)
+        self.clinical_data = clinical_data
         self.ph = ph
         self.frequency = freq
 
         # Store physiological limits for plausibility checks
-        self.MAX_TIME_FHR = MAX_TIME_FHR
-        self.MIN_TIME_FHR = MIN_TIME_FHR
-        self.MAX_TIME_UC = MAX_TIME_UC
-        self.MIN_TIME_UC = MIN_TIME_UC
+        # self.MAX_TIME_FHR = MAX_TIME_FHR
+        # self.MIN_TIME_FHR = MIN_TIME_FHR
+        # self.MAX_TIME_UC = MAX_TIME_UC
+        # self.MIN_TIME_UC = MIN_TIME_UC
 
         # Threshold for minimum non-NaN data required in rolling computations
-        self.NOT_NAN_PERC = NOT_NAN_PERC
+        # self.NOT_NAN_PERC = NOT_NAN_PERC
 
         # Placeholders for preprocessing results (e.g., baseline, decelerations, etc.)
         # self._preprocess_type
@@ -83,79 +112,136 @@ class CTG:
         # self.corr_fhr_uc
         # self.corr_fhr_prima_uc
 
+        ## ---- ATRIBUTOS DE PROGRESO ----
+        # self.is_prep : bool
+
+    ## ---------------------------------------------
+    ## --------------- GET FEATURES ---------------
+
+    def get_features(self):
+        """
+        Extract features from the CTG data.
+        """
+
+        if self.group is None and not print(hasattr(self, "is_prep")):
+            print(
+                "WARNING! Features are being extracted from the unprocessed signals..."
+            )
+
+        return 0
+
     ## ---------------------------------------------
     ## --------------- PREPROCESSING ---------------
 
-    def preprocess_signals():
-        """
-        De momento tenem
-        """
+    def preprocess_signal(self):
+        # si devuelve 1 --> Error
+        # si devuelve 0 --> Ok
 
-    def preprocess_rules_figo(
-        self,
-        cut_time: int = 60,
-        max_size_gaps: int = 15,
-        rm_tail_nan: bool = False,
-    ) -> None:
-        """
-        Preprocess the FHR and UC signals according to FIGO guidelines.
+        ## Leemos la configuración ##
+        freq = self.config.freq
 
-        This includes:
-        - Optionally removing trailing NaNs
-        - Cutting the last N minutes of signal
-        - Resetting time index
-        - Removing physiologically implausible values
-        - Interpolating small gaps, preserving large ones
+        prep_type = self.config.preprocessing.prep_type
+        cut_time = self.config.preprocessing.cut_time
+        rm_tail_nan = self.config.preprocessing.rm_tail_nan
 
-        Args:
-            cut_time (int): Number of minutes to retain from the end of the signal.
-            max_size_gaps (int): Maximum size (in seconds) of gaps to interpolate. Larger gaps remain NaN.
-            rm_tail_nan (bool): Whether to remove trailing NaNs before cutting the signal.
-        """
+        min_value_fhr = self.config.limit.min_value_fhr
+        max_value_fhr = self.config.limit.max_value_fhr
+        min_value_uc = self.config.limit.min_value_uc
+        max_value_uc = self.config.limit.max_value_uc
 
-        if self.fhr.dropna().empty or self.uc.dropna().empty:
-            raise ValueError(
-                "FHR or UC signals are empty, preprocessing cannot be applied."
+        # Comprobar si es nan completamente -> saltamos
+        if np.isnan(self.fhr).all() or np.isnan(self.uc).all():
+            print(
+                f"{self.id}: FHR or UC signals are empty, preprocessing cannot be applied."
             )
 
-        # Create copies of the signals
+            return 1
+
+        # Hacemos copia de las señales
         fhr_aux = self.fhr.copy()
         uc_aux = self.uc.copy()
 
-        # We set the values ​​not allowed for ctg signals to nan
-        fhr_aux[(fhr_aux <= self.MIN_TIME_FHR) | (fhr_aux > self.MAX_TIME_FHR)] = np.nan
-        uc_aux[(uc_aux < self.MIN_TIME_UC) | (uc_aux > self.MAX_TIME_UC)] = np.nan
+        # Ponemos los valores que no sean factibles a nan
+        fhr_aux[(fhr_aux <= min_value_fhr) | (fhr_aux > max_value_fhr)] = np.nan
+        uc_aux[(uc_aux < min_value_uc) | (uc_aux > max_value_uc)] = np.nan
 
-        # Optionally remove trailing NaN values
+        # (opcional) Quitamos los nan del final
         if rm_tail_nan:
             fhr_aux, uc_aux = self._drop_tail_nans(fhr_aux, uc_aux)
 
-        # We define the number of elements that we are going to cut
-        num_cut_rows = self.frequency * cut_time * 60
+        # Cortamos la señal
+        num_cut_data = freq * cut_time * 60
 
-        # Keep only the last N minutes of data
-        fhr_aux = fhr_aux.tail(num_cut_rows)
-        uc_aux = uc_aux.tail(num_cut_rows)
+        fhr_aux = fhr_aux[-num_cut_data:]
+        uc_aux = uc_aux[-num_cut_data:]
 
-        # We updated the new indexes for the cut signals
-        time = np.arange(
-            0, len(fhr_aux) * (1 / (self.frequency)), (1 / (self.frequency))
+        self._time = np.arange(0, (len(fhr_aux) / freq), (1 / freq))
+
+        # Parte específica de cada preprocesado
+        match prep_type:
+            case "FIGO":
+                self._preprocess_type = "FIGO"
+
+                fhr_aux = self._replace_gaps(fhr_aux)
+                uc_aux = self._replace_gaps(uc_aux)
+
+            case "FB_FOURIER":
+                self._preprocess_type = "FB_FOURIER"
+
+                fhr_aux = self._fourier_prep(fhr_aux)
+                uc_aux = self._fourier_prep(uc_aux)
+
+        # Guardamos los resultados
+        self._time = np.arange(0, len(fhr_aux) / freq, 1 / freq)
+
+        self.fhr = fhr_aux
+        self.uc = uc_aux
+
+        return 0
+
+    def _fourier_prep(self, signal):
+        n_basis = self.config.preprocessing.fourier_num_bases
+        threshold = self.config.preprocessing.max_sec_gaps * self.config.freq
+
+        # Tratamos los nan -> interpolamos todos los nans guardando las posiciones donde están
+        nan_mask = np.isnan(signal)  # Guardamos las posiciones de los NaNs
+
+        fd = FDataGrid(data_matrix=[signal])
+        interpolator = MissingValuesInterpolation()
+        fd_interpolated = interpolator.fit_transform(fd)
+        signal = fd_interpolated.data_matrix[0, :, 0]
+
+        # Suavizamos
+        fd_basis_fourier = fd_interpolated.to_basis(Fourier(n_basis=n_basis)).to_grid(
+            grid_points=fd.grid_points
         )
-        fhr_aux.index = time
-        uc_aux.index = time
+        signals = fd_basis_fourier.evaluate(fd_basis_fourier.grid_points[0]).squeeze(
+            axis=2
+        )
 
-        # We save the preprocess we have used in a variable
-        self._preprocess_type = "FIGO rules"
+        # Recuperamos los nan mayores del threshold
+        labeled_gaps, _ = label(nan_mask)
+        gap_sizes = np.bincount(labeled_gaps)
+        big_gaps = np.where(gap_sizes > threshold)[0]
+        big_gaps = big_gaps[big_gaps != 0]
+        big_gaps_mask = np.isin(labeled_gaps, big_gaps)
 
-        # We process the gaps in the signals
-        self.fhr = self._replace_gaps(fhr_aux, max_size_gaps * self.frequency)
-        self.uc = self._replace_gaps(uc_aux, max_size_gaps * self.frequency)
-
-        # We update the time
-        self._time = pd.Series(time)
+        return np.where(big_gaps_mask, np.nan, signals).flatten()
 
     ## ---------------------------------------------
     ## -------------- CORR FUNCTION ----------------
+
+    def crosscorr(self, x, y, lag=0):
+
+        not_nans_threshold = len(x) / 3
+
+        valid = x.notnull() & y.shift(lag).notnull()
+
+        if valid.sum() < not_nans_threshold:
+            print(f"{self.id}: Error")
+            return np.nan
+
+        return x.corr(y.shift(lag))
 
     def get_corr_fun(
         self,
@@ -182,19 +268,45 @@ class CTG:
         #         "results might not be meaningful."
         #     )
 
+        print("Calculando correlación para ctg: ", self.id)
+
         # Máximo desplazamiento 5 mins
-        uc = self.uc
-        fhr = self.fhr
-        tiempo = np.arange(len(uc))
+        uc = pd.Series(self.uc)
+        fhr = pd.Series(self.fhr)
+        tiempo = np.arange(len(uc))  # Para los gráficos
         max_lags = max_desplazamiento * 4 * 60
 
+        fhr_prima = fhr.diff()
+        uc_prima = uc.iloc[1:]
+
         # Hay que interpolar los nan para que funcione las correlaciones
-        uc = np.interp(tiempo, tiempo[~np.isnan(uc)], uc[~np.isnan(uc)])
-        fhr = np.interp(tiempo, tiempo[~np.isnan(fhr)], fhr[~np.isnan(fhr)])
+        # uc = np.interp(tiempo, tiempo[~np.isnan(uc)], uc[~np.isnan(uc)])
+        # fhr = np.interp(tiempo, tiempo[~np.isnan(fhr)], fhr[~np.isnan(fhr)])
+
+        # quitamos las posiciones donde alguna de las dos sean NaN
+        # not_nan_mask = ~np.isnan(uc) & ~np.isnan(fhr)
+
+        # las posicionea quitadas no pueden ser más de 1/3 de la señal
+        # n_total = len(uc)
+        # n_valid = np.sum(not_nan_mask)
+
+        # if n_valid < (0.7) * n_total:
+        #     print(f"Demasiados NaNs: solo {n_valid}/{n_total} muestras válidas")
+        #     return -1
+
+        # Aplicamos la máscara
+        # uc = uc[not_nan_mask]
+        # fhr = fhr[not_nan_mask]
+
+        # uc_prima = uc_prima[not_nan_mask]
+        # fhr_prima = fhr_prima[not_nan_mask]
 
         # derivamos
-        fhr_prima = np.diff(fhr)
-        uc_prima = uc[1:]
+        # fhr_prima = np.diff(fhr)
+        # uc_prima = uc[1:]
+
+        # fhr_prima = fhr.diff()
+        # uc_prima = uc.iloc[1:]
 
         # Evitamos dividir entre 0
         if np.std(uc_prima) == 0 or np.std(fhr_prima) == 0:
@@ -215,29 +327,43 @@ class CTG:
             return -1
 
         # normalizar
-        uc_norm = (uc - np.mean(uc)) / np.std(uc)
-        fhr_norm = (fhr - np.mean(fhr)) / np.std(fhr)
-        uc_prima_norm = (uc_prima - np.mean(uc_prima)) / np.std(uc_prima)
-        fhr_prima_norm = (fhr_prima - np.mean(fhr_prima)) / np.std(fhr_prima)
+        uc_norm = (uc - uc.mean()) / uc.std()
+        fhr_norm = (fhr - fhr.mean()) / fhr.std()
+        uc_prima_norm = (uc_prima - uc_prima.mean()) / uc_prima.std()
+        fhr_prima_norm = (fhr_prima - fhr_prima.mean()) / fhr_prima.std()
 
         # Calculamos el Coeficiente de Correlación de Pearson para cada desplazamientos
-        corr_fhr_curva = np.correlate(uc_norm, fhr_norm, mode="full") / len(uc)
-        lags = np.arange(-len(uc) + 1, len(uc))
+        # corr_fhr_curva = np.correlate(uc_norm, fhr_norm, mode="full") / len(uc)
+        # lags = np.arange(-len(uc) + 1, len(uc))
 
-        filtro_positivos = (lags >= 0) & (lags <= max_lags)
-        corr_fhr_curva = corr_fhr_curva[filtro_positivos]
-        lags = lags[filtro_positivos]
+        # filtro_positivos = (lags >= 0) & (lags <= max_lags)
+        # corr_fhr_curva = corr_fhr_curva[filtro_positivos]
+        # lags = lags[filtro_positivos]
+        lags = np.arange(0, max_lags + 1)
 
-        corr_fhr_prima_curva = np.correlate(
-            uc_prima_norm, fhr_prima_norm, mode="full"
-        ) / len(uc_prima)
-        lags_fhr_prima = np.arange(-len(uc_prima) + 1, len(uc_prima))
-
-        filtro_positivos_fhr_prima = (lags_fhr_prima >= 0) & (
-            lags_fhr_prima <= max_lags
+        corr_fhr_curva = np.array(
+            [self.crosscorr(uc_norm, fhr_norm, lag) for lag in lags]
         )
-        corr_fhr_prima_curva = corr_fhr_prima_curva[filtro_positivos_fhr_prima]
-        lags_fhr_prima = lags_fhr_prima[filtro_positivos_fhr_prima]
+
+        # corr_fhr_prima_curva = np.correlate(
+        #     uc_prima_norm, fhr_prima_norm, mode="full"
+        # ) / len(uc_prima)
+        # lags_fhr_prima = np.arange(-len(uc_prima) + 1, len(uc_prima))
+
+        # filtro_positivos_fhr_prima = (lags_fhr_prima >= 0) & (
+        #     lags_fhr_prima <= max_lags
+        # )
+        # corr_fhr_prima_curva = corr_fhr_prima_curva[filtro_positivos_fhr_prima]
+        # lags_fhr_prima = lags_fhr_prima[filtro_positivos_fhr_prima]
+
+        lags_fhr_prima = np.arange(0, max_lags + 1)
+
+        corr_fhr_prima_curva = np.array(
+            [
+                self.crosscorr(uc_prima_norm, fhr_prima_norm, lag)
+                for lag in lags_fhr_prima
+            ]
+        )
 
         # Sacamos el menor número y el indice al que corresponde
         indice_minimo = np.argmin(corr_fhr_curva)
@@ -906,12 +1032,15 @@ class CTG:
 
         # TODO: Añadir la opción de desplazamiento
 
+        pd_fhr = pd.DataFrame(self.fhr, self._time)
+        pd_uc = pd.DataFrame(self.uc, self._time)
+
         # Split signal length in half
         mid = len(self.fhr) // 2
 
         # Divide the FHR and UC signals into first and second halves
-        fhr1, fhr2 = self.fhr.iloc[:mid], self.fhr.iloc[mid:]
-        uc1, uc2 = self.uc.iloc[:mid], self.uc.iloc[mid:]
+        fhr1, fhr2 = pd_fhr.iloc[:mid], pd_fhr.iloc[mid:]
+        uc1, uc2 = pd_uc.iloc[:mid], pd_uc.iloc[mid:]
 
         # Create 4 vertically stacked subplots (FHR and UC for both halves)
         _, axs = plt.subplots(4, 1, figsize=(25, 12), sharex=False)
@@ -1101,7 +1230,7 @@ class CTG:
 
             self.preprocess_rules_figo(
                 cut_time=prep_cut_time,
-                max_size_gaps=prep_max_size_gaps,
+                max_sec_gaps=prep_max_size_gaps,
                 rm_tail_nan=rm_tail_nan,
             )
 
@@ -1826,69 +1955,70 @@ class CTG:
         return pd.DataFrame(resultados)
 
     def _drop_tail_nans(
-        self, fhr: pd.Series, uc: pd.Series
+        self, fhr: np.ndarray, uc: np.ndarray
     ) -> tuple[pd.Series, pd.Series]:
         """
         Removes trailing NaN values from the end of two aligned pandas Series (fhr and uc).
 
         Args:
-            fhr (pd.Series): Fetal heart rate Series that may contain trailing NaNs.
-            uc (pd.Series): Uterine contraction Series, assumed to be aligned with fhr.
+            fhr (np.ndarray) : Fetal heart rate Series that may contain trailing NaNs.
+            uc (np.ndarray) : Uterine contraction Series, assumed to be aligned with fhr.
 
         Returns:
-            Tuple[pd.Series, pd.Series]: New Series with trailing NaNs removed from both fhr and uc.
+            Tuple[np.ndarray, np.ndarray]: New Series with trailing NaNs removed from both fhr and uc.
         """
-        if not isinstance(fhr, pd.Series):
-            raise TypeError("La entrada debe ser un pandas.Series")
+        if not isinstance(fhr, np.ndarray):
+            raise TypeError("La entrada debe ser numpy.ndarray")
 
-        # Get the index of the last non-NaN value
-        last_valid_index = fhr.last_valid_index()
+        valid_mask = ~np.isnan(fhr)
 
-        if last_valid_index is None:
-            # If all values are NaN, return an empty Series with same dtype
-            return fhr.iloc[0:0], uc.loc[0:0]
+        if not valid_mask.any():
+            return fhr[:0], uc[:0]
+
+        # último índice válido
+        last_valid_index = np.where(valid_mask)[0][-1]
 
         # Slice both Series up to the last valid index (inclusive)
-        return fhr.loc[:last_valid_index], uc.loc[:last_valid_index]
+        return fhr[: last_valid_index + 1], uc[: last_valid_index + 1]
 
-    @staticmethod
-    def _replace_gaps(signal: pd.Series, threshold: int) -> pd.Series:
-        """
-        Replace small gaps (NaN segments) in a signal by interpolation.
+    def _replace_gaps(self, signal: pd.Series) -> pd.Series:
+        if len(signal) == 0:
+            print("WARNING (ctg.replace_gaps): Señal vacia!!!")
+            return signal.copy()
 
-        This method identifies continuous NaN segments (gaps) in the given signal.
-        If the length of a gap is less than or equal to the specified threshold,
-        the gap is interpolated. Otherwise, the gap is left as NaN.
+        # Calculamos el límite de nan consecutivos
+        max_sec_gaps = self.config.preprocessing.max_sec_gaps
+        freq = self.config.freq
+        num_datos_nan = (
+            max_sec_gaps * freq
+        ) + 1  # Sumamos 1 para incluir los x sec completos
 
-        Args:
-            signal (pd.Series): Time series signal containing NaN values to be processed.
-            threshold (int): Maximum length of a gap that can be interpolated.
+        # 1. Encontrar bloques de NaNs y sus tamaños
+        is_nan = np.isnan(signal)
 
-        Returns:
-            pd.Series: Signal with small gaps interpolated and larger ones left as NaN.
-        """
+        # label() agrupa los True (NaNs) consecutivos y les asigna un ID único
+        labeled_gaps, _ = label(is_nan)
 
-        # Retrieve the gaps (NaN segments) from the signal and iterate over them
-        gaps = CTG._get_nan_series_from_series(signal)  # DEBUG
+        # Contamos el tamaño de cada grupo de NaNs
+        gap_sizes = np.bincount(labeled_gaps)
 
-        for _, row in CTG._get_nan_series_from_series(signal).iterrows():
+        # 2. Creamos una máscara de los NaNs que SÍ queremos interpolar (<= threshold)
+        # Ignoramos el índice 0 de bincount porque corresponde a los valores que NO son NaN
+        gaps_to_interpolate = np.where(gap_sizes <= num_datos_nan)[0]
+        gaps_to_interpolate = gaps_to_interpolate[gaps_to_interpolate != 0]
 
-            # If the gap length is less than or equal to the threshold, interpolate it
-            # Otherwise, leave the gap as NaN
-            if row["Length"] <= threshold:
+        # Máscara final de elementos a rellenar
+        mask_to_fill = np.isin(labeled_gaps, gaps_to_interpolate)
 
-                # Define the start and end points of the gap with a buffer
-                # for better interpolation
-                start = row["Start Index"] - 0.25
-                end = start + (row["Length"] * 0.25)
+        # 3. Interpolar usando Pandas (Lineal)
+        series = pd.Series(signal)
+        interpolated_series = series.interpolate(method="linear")
 
-                # Interpolate the values within the defined range
-                interpolated_part = signal.loc[start:end].interpolate()
+        # 4. Combinar: Solo aplicar la interpolación donde el gap era pequeño
+        # Mantenemos los NaNs originales en los gaps grandes
+        res_signal = np.where(mask_to_fill, interpolated_series, signal)
 
-                # Replace the original gap with the interpolated values
-                signal[start:end] = interpolated_part
-
-        return signal
+        return res_signal
 
     def _get_deceleration_condition(
         self,
