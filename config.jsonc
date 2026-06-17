@@ -1,0 +1,65 @@
+{
+    "get_graphs" : true, // baseline_graph, variability_graph, conclusion_graph
+    "ph_limit": 7.2,
+    "freq" : 4,
+
+    // leer datos
+    "data_folder_path" : "./data/db_public/", // "./data/db_12O/" - "./data/db_public/"
+    "cut_min_read" : 60, // cortamos mas minutos que en el prep por si hay nan al final
+
+    // etiquetas
+    "normal" : 0, 
+    "suspicious" : 1,
+    "pathological" : 2,
+
+    // Path a los datos
+    "max_value_fhr" : 250,
+    "min_value_fhr" : 0,
+    "max_value_uc" : 150,
+    "min_value_uc" : 0,
+
+    // Preprocesing 
+    "prep_type" : "FB_FOURIER", // FIGO, FB_FOURIER , comert, comert_gaps, dahfi_llrs, dahfi_bspline, dahfi_fourier, dahfi_gaps, dahfi_llrs_gaps, dahfi_bspline_gaps, dahfi_fourier_gaps
+    "cut_time" : 30,
+    "max_sec_gaps": 15, // en segundos
+    "rm_tail_nan": true, 
+
+    "fourier_num_bases": 360, 
+
+    // Correlation Curve
+    "max_sec_displacement" : 5,
+
+    // Apply Rules
+    "guidelines_rules" : "FIGO", // rules_type
+    "center_window" : false, // center
+    "preprocess" : false, // borrar
+
+    "window_min_baseline" : 10,
+    "amplitude_dec_cond" : 15, 
+    "time_in_deceleration" : 15, // min ?? 
+    "time_in_rep_dec" : 30,
+    "correlation_threshold" : -0.4,
+    "time_in_late_dec_cond" : 30,
+    "contraction_time_shift" : 20, 
+    "contraction_value_threshold" : 10,
+    "contraction_duration_threshold" : 20, 
+    "contraction_baseline_duration" : 120,
+    "time_in_prolonged_dec" : 3,
+    "time_in_rep_dec_for_red_var" : 20, 
+    "time_patholog_prolonged_dec" : 5,
+    "deceleration_graph" : false, 
+    "window_var" : 1, 
+    "incr_var_min_time" : 30, 
+    "incr_var_bandwidth" : 25, 
+    "red_var_duration_baseline" : 50, 
+    "red_var_duration_deceleration" : 3, 
+    "red_var_bandwith" : 5,
+
+    // Features
+    "type_features" : "M_L_NL_IBTF_CLINIC", // M, M_L, M_L_NL, M_L_NL_IBTF, M_L_NL_IBTF_CLINIC, ... + FDA, FDA_CLINIC
+    "morphological_features" : ["baseline", "DCC", "ACC"],
+    "linear_features" : ["mean", "std", "LTV", "delta", "STV", "II"],
+    "nolinear_features" : ["ApEn015", "ApEn020", "SampEn015", "SampEn020", "LZC"],
+    "IBTF_features" : ["contrast VLF", "correlation VLF", "energy VLF", "homogeneity VLF", "contrast LF", "correlation LF", "energy LF", "homogeneity LF", "contrast MF", "correlation MF", "energy MF", "homogeneity MF", "contrast HF", "correlation HF", "energy HF", "homogeneity HF"], 
+    "clinical_features" : ["EDADMADRE", "RAZAMADRE", "PESOMADRE", "TALLAMADRE",  "IMCPREGESTACIONAL", "PATOLOGIAMADRE", "HTACRON/GEST", "PE LEVE", "PE GRAVE", "DM PREGEST", "DG DIETA", "DG INS", "CIH", "INFECCION MAT", "TIPOGESTACION", "TOTALGESTACIONES", "ABORTOS", "VAGINALES", "CESAREAS"]
+}
