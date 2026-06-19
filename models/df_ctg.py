@@ -1,15 +1,17 @@
 import sys
-from .ctg import CTG
-from collections import Counter
 import commentjson
 import numpy as np
 import pandas as pd
+from .ctg import CTG
 import seaborn as sns
 import tensorflow as tf
+from mrmr import mrmr_classif
+from collections import Counter
+from config_methods import AppConfig
 from matplotlib import pyplot as plt
 from sklearn.metrics import roc_curve, auc
 from typing import Union, Optional, Dict, Tuple
-from config_methods import AppConfig
+from sklearn.feature_selection import mutual_info_classif
 from utils.features import extract_all_signal_features, extract_clinical_features
 
 
@@ -140,14 +142,11 @@ class DF_CTG:
     ## ----------------------------------------------
     ## ------------ GET DATA TF STYLE ---------------
 
-    def get_ph_array(self) -> np.ndarray:
-        """
-        Get the list of pH values for all stored CTGs.
+    def get_labels_array(self) -> np.ndarray:
 
-        Returns:
-            list: A list containing the pH values of all CTGs in the instance.
-        """
-        return np.array([ctg.ph for ctg in self.ctgs])
+        ph = np.array([ctg.ph for ctg in self.ctgs])
+
+        return (ph < 7.2).astype(int)
 
     def get_corr_curves_and_ph(self):
         print("Para obtener estas curvas antes hay que ejecutar get_corr()")
@@ -171,15 +170,6 @@ class DF_CTG:
             ph.append(ctg.ph)
 
         return np.array(corr_curves), np.array([1 if x < 7.2 else 0 for x in ph])
-
-    def get_training_features(self):
-        """
-        Get the training features for all stored CTGs.
-
-        Returns:
-            list: A list containing the training features of all CTGs in the instance.
-        """
-        return [ctg.get_features() for ctg in self.ctgs]
 
     def get_all_features(self, get_names=True):
         if hasattr(self.ctgs[0], "_preprocess_type"):
@@ -210,7 +200,7 @@ class DF_CTG:
             signals_fhr_prima, get_names=get_names
         )
 
-        name_fhr_prima = [f"{name}_FHR_prima" for name in names]
+        name_fhr_prima = [f"{name}_FHR_PRIMA" for name in names]
 
         # UC
         print("3 -> Extrayendo características de UC")
@@ -264,9 +254,29 @@ class DF_CTG:
             )
         )
 
-        return names, feat
+        # Guardamos
 
-    def prepare_model_data(self):
+        self.names_features = names
+        self.features = feat
+
+        return np.array(names), feat
+
+    def get_mrmr_features(self, num_features=30):
+        if not hasattr(self, "features"):
+            self.get_all_features()
+
+        df_featues = pd.DataFrame(self.features, columns=self.names_features)
+        labels = self.get_labels_array()
+
+        features_seleccionadas = mrmr_classif(X=df_featues, y=labels, K=num_features)
+
+        print("=== CARACTERÍSTICAS SELECCIONADAS POR mRMR ===")
+        for i, feat in enumerate(features_seleccionadas, start=1):
+            print(f"{i}. {feat}")
+
+        return df_featues[features_seleccionadas].values
+
+    def get_signal_and_ph(self):
         """
         Obtener los vectores (tensorflow) para entrenar modelos.
         La forma de los vectores es :
@@ -1082,12 +1092,6 @@ class DF_CTG:
             "", fontsize=14
         )  # Dejamos el eje X vacío porque las etiquetas de las cajas ya lo explican
         plt.ylabel("pH Values", fontsize=25)
-        # plt.title(
-        #     "Distribution of pH Recordings by Clinical Category",
-        #     fontsize=15,
-        #     pad=15,
-        #     fontweight="bold",
-        # )
 
         plt.legend(loc="upper right", fontsize=25, frameon=True)
 
@@ -1100,3 +1104,83 @@ class DF_CTG:
         # 8. Guardar listo para tu documento de LaTeX
         plt.savefig("ph_categories_boxplot.pdf", format="pdf", bbox_inches="tight")
         plt.show()
+
+    ## ---------------------------------------------
+    ## --------------- MI FUNCTION -----------------
+
+    def _get_mutual_information(self):
+
+        if not hasattr(self, ".features"):
+            self.get_all_features()
+
+        nombres_features = self.names_features
+        X = self.features
+        y = self.get_labels_array()
+
+        # 2. Calcular la Información Mutua
+        # random_state=42 asegura que el cálculo (que usa estimación por vecinos cercanos) sea reproducible
+        mi_scores = mutual_info_classif(X, y, random_state=42)
+
+        # 3. Crear un Pandas Series para ordenar y visualizar fácilmente los resultados
+        mi_series = pd.Series(mi_scores, index=nombres_features)
+        mi_series = mi_series.sort_values(ascending=False)
+
+        print("=== PUNTAJES DE INFORMACIÓN MUTUA ===")
+        print(mi_series)
+
+        return mi_scores
+
+    def mi_features_labels_graph(self):
+
+        mi_scores = self._get_mutual_information()
+
+        nombres_features = self.names_features
+
+        df_mi = pd.DataFrame({"Feature": nombres_features, "MI": mi_scores})
+        df_mi = df_mi.sort_values(by="MI", ascending=False).reset_index(drop=True)
+
+        df_mi["Cumulative_MI"] = df_mi["MI"].cumsum()
+
+        _, ax1 = plt.subplots(figsize=(50, 10))
+
+        ax1.bar(
+            df_mi["Feature"],
+            df_mi["MI"],
+            alpha=0.3,
+            color="gray",
+            label="MI Individual",
+            width=0.4,
+        )
+
+        ax1.plot(
+            df_mi["Feature"],
+            df_mi["Cumulative_MI"],
+            marker="o",
+            linestyle="-",
+            color="#17a2b8",
+            linewidth=2.5,
+            label="MI Acumulada",
+        )
+
+        ax1.set_ylabel("Valor de Información Mutua", fontsize=12)
+        ax1.set_xlabel("Características", fontsize=12, labelpad=10)
+        ax1.set_xticklabels(df_mi["Feature"], rotation=45, ha="right", fontsize=10)
+
+        max_acumulado = df_mi["Cumulative_MI"].max()
+        ax1.set_ylim(0, max_acumulado * 1.1)
+
+        # Añadir leyenda para distinguir línea y barras
+        ax1.legend(loc="upper left")
+
+        plt.title(
+            "Información Mutua Individual y Acumulada",
+            fontsize=14,
+            pad=15,
+            fontweight="bold",
+        )
+        ax1.grid(True, linestyle="--", alpha=0.5)
+        plt.tight_layout()
+
+        plt.savefig("curva_informacion_mutua_acumulada.pdf", format="pdf")
+
+        return 0
