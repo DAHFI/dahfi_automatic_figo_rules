@@ -28,6 +28,7 @@ class PreprocessingConfig(BaseModel):
 
 class CorrelationConfig(BaseModel):
     max_sec_displacement: int
+    not_nans_threshold_porc: float
 
 
 class GuidelinesRulesConfig(BaseModel):
@@ -62,6 +63,8 @@ class FeaturesModelConfig(BaseModel):
     nolinear_features: list
     IBTF_features: list
     clinical_features: list
+    clinical_features_binary: list
+    clinical_features_numeric: list
 
 
 class AppConfig:

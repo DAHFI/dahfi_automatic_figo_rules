@@ -19,7 +19,7 @@
     "min_value_uc" : 0,
 
     // Preprocesing 
-    "prep_type" : "FB_FOURIER", // FIGO, FB_FOURIER , comert, comert_gaps, dahfi_llrs, dahfi_bspline, dahfi_fourier, dahfi_gaps, dahfi_llrs_gaps, dahfi_bspline_gaps, dahfi_fourier_gaps
+    "prep_type" : "FIGO", // FIGO, FB_FOURIER , comert, comert_gaps, dahfi_llrs, dahfi_bspline, dahfi_fourier, dahfi_gaps, dahfi_llrs_gaps, dahfi_bspline_gaps, dahfi_fourier_gaps
     "cut_time" : 30,
     "max_sec_gaps": 15, // en segundos
     "rm_tail_nan": true, 
@@ -27,7 +27,8 @@
     "fourier_num_bases": 360, 
 
     // Correlation Curve
-    "max_sec_displacement" : 5,
+    "max_sec_displacement" : 60,
+    "not_nans_threshold_porc" : 0.3,
 
     // Apply Rules
     "guidelines_rules" : "FIGO", // rules_type
@@ -61,5 +62,8 @@
     "linear_features" : ["mean", "std", "LTV", "delta", "STV", "II"],
     "nolinear_features" : ["ApEn015", "ApEn020", "SampEn015", "SampEn020", "LZC"],
     "IBTF_features" : ["contrast VLF", "correlation VLF", "energy VLF", "homogeneity VLF", "contrast LF", "correlation LF", "energy LF", "homogeneity LF", "contrast MF", "correlation MF", "energy MF", "homogeneity MF", "contrast HF", "correlation HF", "energy HF", "homogeneity HF"], 
-    "clinical_features" : ["EDADMADRE", "RAZAMADRE", "PESOMADRE", "TALLAMADRE",  "IMCPREGESTACIONAL", "PATOLOGIAMADRE", "HTACRON/GEST", "PE LEVE", "PE GRAVE", "DM PREGEST", "DG DIETA", "DG INS", "CIH", "INFECCION MAT", "TIPOGESTACION", "TOTALGESTACIONES", "ABORTOS", "VAGINALES", "CESAREAS"]
+    "clinical_features" : ["age", "gravidity", "parity", "gest. weeks",  "diabetes", "hypertension", "preeclampsia"],
+
+    "clinical_features_binary" : ["diabetes", "hypertension", "preeclampsia"],
+    "clinical_features_numeric" : ["age", "gravidity", "parity", "gest. weeks"] 
 }

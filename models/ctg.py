@@ -231,17 +231,103 @@ class CTG:
     ## ---------------------------------------------
     ## -------------- CORR FUNCTION ----------------
 
-    def crosscorr(self, x, y, lag=0):
+    def _crosscorr(self, x, y, lag=0):
 
-        not_nans_threshold = len(x) / 3
+        # not_nans_threshold = len(x) * self.config.correlation.not_nans_threshold_porc
+        not_nans_threshold = len(x) * 0.3
 
-        valid = x.notnull() & y.shift(lag).notnull()
+        y_shift = self.shift_numpy(y, lag=lag)
 
-        if valid.sum() < not_nans_threshold:
-            print(f"{self.id}: Error")
-            return np.nan
+        indices_validos = ~np.isnan(x) & ~np.isnan(y_shift)
 
-        return x.corr(y.shift(lag))
+        # Comprobando que al menos hay tantos datos distintos de nan como el límite (normalmente 30% min)
+        # Si más del 70% de los datos son nan, ponemos el valor de la corerlación a nan
+        if indices_validos.sum() < not_nans_threshold:
+            print(
+                f"WARNING (ctg id: {self.id}): Más del {(1 - 0.3)*100}% de la señal es NaN."
+            )
+            # return np.nan
+
+        return np.corrcoef(x[indices_validos], y_shift[indices_validos])[0][1]
+
+    @staticmethod
+    def _get_max_corr_lag(corr_signal, lags):
+        # Obtenemos el índice del mayor valor en valor absoluto
+        abs = np.abs(corr_signal)
+        max_abs = np.nanargmax(abs)
+
+        # Nos quedamos con el indice que este más cercano al 0, por ambos lados
+        index_max_abs = np.where(np.isclose(abs, abs[max_abs]))[0]
+        lags_index_max_abs = lags[index_max_abs]
+        index_closer_0 = np.argmin(np.abs(lags_index_max_abs))
+        res_index = index_max_abs[index_closer_0]
+
+        # lag con el que se alcanza el valor max en abs, y el valor máximo en abs (se devuelve con signo)
+        return lags[res_index], corr_signal[res_index]
+
+    @staticmethod
+    def plot_corr_graph(
+        fhr,
+        uc,
+        tiempo,
+        lags,
+        corr_fhr_curva,
+        max_abs_corr_fhr_uc,
+        lag_max_abs_corr_fhr_uc,
+        corr_fhr_prima_curva,
+        max_abs_corr_fhr_prima_uc,
+        lag_max_abs_corr_fhr_prima_uc,
+    ):
+        ## 1 Gráfica correlaciones + desplazamiento para la FHR
+        plt.figure(figsize=(10, 5))
+        eje_x_lags = lags / (4 * 60)
+        plt.plot(eje_x_lags, corr_fhr_curva)
+        # plt.title("Curva de Correlación Cruzada (UC vs FHR)")
+        plt.xlabel("Displacement (min)", fontsize=18)
+        plt.ylabel("Correlation", fontsize=18)
+        plt.grid(True)
+        plt.savefig("corr_curve.pdf", format="pdf", bbox_inches="tight")
+        plt.show()
+
+        print(f"La correlación máxima (abs) es: {max_abs_corr_fhr_uc:.2f}")
+        print(
+            f"Ocurre con un desplazamiento de: {lag_max_abs_corr_fhr_uc:.2f} puntos -> {lag_max_abs_corr_fhr_uc/(4*60):.2f} minutos"
+        )
+
+        ## 2 Gráfica correlaciones + desplazamiento para la FHR'
+        plt.figure(figsize=(10, 5))
+        eje_x_lags = lags / (4 * 60)
+        plt.plot(eje_x_lags, corr_fhr_prima_curva)
+        # plt.title("Curva de Correlación Cruzada (UC vs FHR')")
+        plt.xlabel("Displacement (min)")
+        plt.ylabel("Correlation")
+        plt.grid(True)
+        plt.show()
+
+        print(f"La correlación máxima (abs) es: {max_abs_corr_fhr_prima_uc:.2f}")
+        print(
+            f"Ocurre con un desplazamiento de: {lag_max_abs_corr_fhr_prima_uc:.2f} puntos -> {lag_max_abs_corr_fhr_prima_uc/(4*60):.2f} minutos"
+        )
+
+        ## 3 Gráfica de FHR y UC, con una desplazada sobre la otra
+        tiempo_desplazado = tiempo - lag_max_abs_corr_fhr_uc
+
+        plt.figure(figsize=(20, 6))
+        plt.plot(tiempo, uc, label="UC (Original)", color="blue", alpha=0.7)
+        plt.plot(
+            tiempo_desplazado,
+            fhr,
+            label=f"FHR desplazada (Lag {lag_max_abs_corr_fhr_uc})",
+            color="black",
+            alpha=0.7,
+        )
+        plt.title("Sincronización de UC y FHR")
+        plt.xlabel("Tiempo (puntos)")
+        plt.ylabel("Señales")
+        plt.legend()
+        plt.grid(True)
+        # plt.savefig("corr_curve.pdf", format="pdf", bbox_inches="tight")
+        plt.show()
 
     def get_corr_fun(
         self,
@@ -249,64 +335,15 @@ class CTG:
         ax2=None,
         contador_error=0,
         one_ctg_analisis=True,
-        max_desplazamiento=5,
     ):
-        ## (1) Solo consideramos los valores positivos de desplazamiento
-        ## implican que la fhr se desplaza hacia la derecha respecto
-        ## a la uc. Es decir, que los eventos de la uc provocan cambios
-        ## en la fhr.
-
-        ## (2) También nos centramos en analizar la correlación inversa,
-        ## ya que nos interesa saber como se correlacionan las
-        ## deceleraciones con las contracciones
-
-        ## one_ctg_analisis -> borrar, solo se usa para probar el código
-
-        # if len(self.uc) > (30 * 60 * 4 + 1) and one_ctg_analisis:
-        #     print(
-        #         "WARNING: A very large time window is being taken, and the "
-        #         "results might not be meaningful."
-        #     )
-
-        print("Calculando correlación para ctg: ", self.id)
-
-        # Máximo desplazamiento 5 mins
-        uc = pd.Series(self.uc)
-        fhr = pd.Series(self.fhr)
+        fhr = self.fhr
+        uc = self.uc
         tiempo = np.arange(len(uc))  # Para los gráficos
-        max_lags = max_desplazamiento * 4 * 60
+        # max_lags = self.config.correlation.max_sec_displacement * 4
+        max_lags = 60 * 4
 
-        fhr_prima = fhr.diff()
-        uc_prima = uc.iloc[1:]
-
-        # Hay que interpolar los nan para que funcione las correlaciones
-        # uc = np.interp(tiempo, tiempo[~np.isnan(uc)], uc[~np.isnan(uc)])
-        # fhr = np.interp(tiempo, tiempo[~np.isnan(fhr)], fhr[~np.isnan(fhr)])
-
-        # quitamos las posiciones donde alguna de las dos sean NaN
-        # not_nan_mask = ~np.isnan(uc) & ~np.isnan(fhr)
-
-        # las posicionea quitadas no pueden ser más de 1/3 de la señal
-        # n_total = len(uc)
-        # n_valid = np.sum(not_nan_mask)
-
-        # if n_valid < (0.7) * n_total:
-        #     print(f"Demasiados NaNs: solo {n_valid}/{n_total} muestras válidas")
-        #     return -1
-
-        # Aplicamos la máscara
-        # uc = uc[not_nan_mask]
-        # fhr = fhr[not_nan_mask]
-
-        # uc_prima = uc_prima[not_nan_mask]
-        # fhr_prima = fhr_prima[not_nan_mask]
-
-        # derivamos
-        # fhr_prima = np.diff(fhr)
-        # uc_prima = uc[1:]
-
-        # fhr_prima = fhr.diff()
-        # uc_prima = uc.iloc[1:]
+        fhr_prima = np.diff(fhr)
+        uc_prima = uc[1:]
 
         # Evitamos dividir entre 0
         if np.std(uc_prima) == 0 or np.std(fhr_prima) == 0:
@@ -326,117 +363,59 @@ class CTG:
                 )
             return -1
 
-        # normalizar
-        uc_norm = (uc - uc.mean()) / uc.std()
-        fhr_norm = (fhr - fhr.mean()) / fhr.std()
-        uc_prima_norm = (uc_prima - uc_prima.mean()) / uc_prima.std()
-        fhr_prima_norm = (fhr_prima - fhr_prima.mean()) / fhr_prima.std()
+        # Normalizamos la señal FHR y UC
+        uc_norm = (uc - np.nanmean(uc)) / np.nanstd(uc)
+        fhr_norm = (fhr - np.nanmean(fhr)) / np.nanstd(fhr)
 
-        # Calculamos el Coeficiente de Correlación de Pearson para cada desplazamientos
-        # corr_fhr_curva = np.correlate(uc_norm, fhr_norm, mode="full") / len(uc)
-        # lags = np.arange(-len(uc) + 1, len(uc))
+        uc_prima_norm = (uc_prima - np.nanmean(uc_prima)) / np.nanstd(uc_prima)
+        fhr_prima_norm = (fhr_prima - np.nanmean(fhr_prima)) / np.nanstd(fhr_prima)
 
-        # filtro_positivos = (lags >= 0) & (lags <= max_lags)
-        # corr_fhr_curva = corr_fhr_curva[filtro_positivos]
-        # lags = lags[filtro_positivos]
-        lags = np.arange(0, max_lags + 1)
+        # Array de lags -> array([-max_lags, ..., -1, 0, 1, 2, ....., max_lags])
+        lags = np.arange(-max_lags, max_lags + 1)
 
+        # Calculamos la curva de correlaciones
         corr_fhr_curva = np.array(
-            [self.crosscorr(uc_norm, fhr_norm, lag) for lag in lags]
+            [self._crosscorr(uc_norm, fhr_norm, lag) for lag in lags]
         )
 
-        # corr_fhr_prima_curva = np.correlate(
-        #     uc_prima_norm, fhr_prima_norm, mode="full"
-        # ) / len(uc_prima)
-        # lags_fhr_prima = np.arange(-len(uc_prima) + 1, len(uc_prima))
-
-        # filtro_positivos_fhr_prima = (lags_fhr_prima >= 0) & (
-        #     lags_fhr_prima <= max_lags
-        # )
-        # corr_fhr_prima_curva = corr_fhr_prima_curva[filtro_positivos_fhr_prima]
-        # lags_fhr_prima = lags_fhr_prima[filtro_positivos_fhr_prima]
-
-        lags_fhr_prima = np.arange(0, max_lags + 1)
-
         corr_fhr_prima_curva = np.array(
-            [
-                self.crosscorr(uc_prima_norm, fhr_prima_norm, lag)
-                for lag in lags_fhr_prima
-            ]
+            [self._crosscorr(uc_prima_norm, fhr_prima_norm, lag) for lag in lags]
         )
 
         # Sacamos el menor número y el indice al que corresponde
-        indice_minimo = np.argmin(corr_fhr_curva)
-        lag_del_minimo = lags[indice_minimo]
-
-        indice_minimo_fhr_prima = np.argmin(corr_fhr_prima_curva)
-        lag_del_minimo_fhr_prima = lags_fhr_prima[indice_minimo_fhr_prima]
+        lag_max_abs_corr_fhr_uc, max_abs_corr_fhr_uc = self._get_max_corr_lag(
+            corr_fhr_curva, lags
+        )
+        lag_max_abs_corr_fhr_prima_uc, max_abs_corr_fhr_prima_uc = (
+            self._get_max_corr_lag(corr_fhr_prima_curva, lags)
+        )
 
         # Sacamos gráficas
         if one_ctg_analisis:
-            # graficar las correlaciones con el desplazamiento
-            plt.figure(figsize=(10, 5))
-            eje_x_lags = lags / (4 * 60)
-            plt.plot(eje_x_lags, corr_fhr_curva)
-            # plt.title("Curva de Correlación Cruzada (UC vs FHR)")
-            plt.xlabel("Displacement (min)", fontsize=18)
-            plt.ylabel("Correlation", fontsize=18)
-            plt.grid(True)
-            plt.savefig("corr_curve.pdf", format="pdf", bbox_inches="tight")
-            plt.show()
-
-            print(f"La correlación mínima es: {corr_fhr_curva[indice_minimo]:.2f}")
-            print(
-                f"Ocurre con un desplazamiento de: {lag_del_minimo:.2f} puntos -> {lag_del_minimo/(4*60):.2f} minutos"
-            )
-
-            plt.figure(figsize=(10, 5))
-            eje_x_lags = lags_fhr_prima / (4 * 60)
-            plt.plot(eje_x_lags, corr_fhr_prima_curva)
-            # plt.title("Curva de Correlación Cruzada (UC vs FHR')")
-            plt.xlabel("Displacement (min)")
-            plt.ylabel("Correlation")
-            plt.grid(True)
-            plt.show()
-
-            print(
-                f"La correlación mínima es: {corr_fhr_prima_curva[indice_minimo_fhr_prima]:.2f}"
-            )
-            print(
-                f"Ocurre con un desplazamiento de: {lag_del_minimo_fhr_prima:.2f} puntos -> {lag_del_minimo_fhr_prima/(4*60):.2f} minutos"
-            )
-
-            # curvas desplazada
-            tiempo_desplazado = tiempo - lag_del_minimo
-
-            plt.figure(figsize=(20, 6))
-            plt.plot(tiempo, uc, label="UC (Original)", color="blue", alpha=0.7)
-            plt.plot(
-                tiempo_desplazado,
+            self.plot_corr_graph(
                 fhr,
-                label=f"FHR desplazada (Lag {lag_del_minimo})",
-                color="black",
-                alpha=0.7,
+                uc,
+                tiempo,
+                lags,
+                corr_fhr_curva,
+                max_abs_corr_fhr_uc,
+                lag_max_abs_corr_fhr_uc,
+                corr_fhr_prima_curva,
+                max_abs_corr_fhr_prima_uc,
+                lag_max_abs_corr_fhr_prima_uc,
             )
-            plt.title("Sincronización de UC y FHR")
-            plt.xlabel("Tiempo (puntos)")
-            plt.ylabel("Señales")
-            plt.legend()
-            plt.grid(True)
-            # plt.savefig("corr_curve.pdf", format="pdf", bbox_inches="tight")
-            plt.show()
 
         if not one_ctg_analisis:
             # Pintamos en el gráfico de arriba (FHR original)
 
-            if self.ph < 7.2:
+            if self.ph < self.config.ph_limit:
                 color = "red"
             else:
                 color = "green"
 
             ax1.scatter(
-                lag_del_minimo / (4 * 60),
-                corr_fhr_curva[indice_minimo],
+                lag_max_abs_corr_fhr_uc / 4,
+                max_abs_corr_fhr_uc,
                 c=color,
                 s=10,
                 alpha=0.5,
@@ -444,8 +423,8 @@ class CTG:
 
             # Pintamos en el gráfico de abajo (Derivada FHR')
             ax2.scatter(
-                lag_del_minimo_fhr_prima / (4 * 60),
-                corr_fhr_prima_curva[indice_minimo_fhr_prima],
+                lag_max_abs_corr_fhr_prima_uc / 4,
+                max_abs_corr_fhr_prima_uc,
                 c=color,
                 s=10,
                 alpha=0.5,
@@ -455,7 +434,7 @@ class CTG:
         self.corr_fhr_uc = corr_fhr_curva
         self.corr_fhr_prima_uc = corr_fhr_prima_curva
 
-        return corr_fhr_curva[indice_minimo], lag_del_minimo
+        return max_abs_corr_fhr_uc, lag_max_abs_corr_fhr_uc
 
     ## ---------------------------------------------
     ## ------------------ SMOOTHE ------------------
@@ -1888,6 +1867,26 @@ class CTG:
 
     ## -----------------------------------------------------
     ## --------------- AUXILIARY FUNCTIONS -----------------
+    @staticmethod
+    def shift_numpy(arr: np.ndarray, lag: int, fill_value=np.nan) -> np.ndarray:
+        if lag == 0:
+            return arr.copy()
+
+        result = np.empty_like(arr, dtype=float)
+        if lag > 0:
+            if lag >= len(arr):
+                result.fill(fill_value)
+            else:
+                result[:lag] = fill_value
+                result[lag:] = arr[:-lag]
+        else:
+            abs_lag = abs(lag)
+            if abs_lag >= len(arr):
+                result.fill(fill_value)
+            else:
+                result[-abs_lag:] = fill_value
+                result[:-abs_lag] = arr[abs_lag:]
+        return result
 
     def _get_baseline(self, window_min_size: float, center: bool = False) -> pd.Series:
         """

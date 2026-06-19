@@ -10,6 +10,7 @@ from matplotlib import pyplot as plt
 from sklearn.metrics import roc_curve, auc
 from typing import Union, Optional, Dict, Tuple
 from config_methods import AppConfig
+from utils.features import extract_all_signal_features, extract_clinical_features
 
 
 class DF_CTG:
@@ -139,14 +140,14 @@ class DF_CTG:
     ## ----------------------------------------------
     ## ------------ GET DATA TF STYLE ---------------
 
-    def get_ph_list(self) -> list:
+    def get_ph_array(self) -> np.ndarray:
         """
         Get the list of pH values for all stored CTGs.
 
         Returns:
             list: A list containing the pH values of all CTGs in the instance.
         """
-        return [ctg.ph for ctg in self.ctgs]
+        return np.array([ctg.ph for ctg in self.ctgs])
 
     def get_corr_curves_and_ph(self):
         print("Para obtener estas curvas antes hay que ejecutar get_corr()")
@@ -169,7 +170,7 @@ class DF_CTG:
             corr_curves.append(corr_interp)
             ph.append(ctg.ph)
 
-        return corr_curves, [1 if x < 7.2 else 0 for x in ph]
+        return np.array(corr_curves), np.array([1 if x < 7.2 else 0 for x in ph])
 
     def get_training_features(self):
         """
@@ -179,6 +180,91 @@ class DF_CTG:
             list: A list containing the training features of all CTGs in the instance.
         """
         return [ctg.get_features() for ctg in self.ctgs]
+
+    def get_all_features(self, get_names=True):
+        if hasattr(self.ctgs[0], "_preprocess_type"):
+            print(
+                f"Extrayendo las características usando el preprocesado: {self.ctgs[0]._preprocess_type}"
+            )
+        else:
+            print(
+                "WARNING!! : Se están extrayendo las características usando señales sin preprocesar..."
+            )
+
+        if not hasattr(self.ctgs[0], "corr_fhr_uc") or not hasattr(
+            self.ctgs[0], "corr_fhr_prima_uc"
+        ):
+            raise RuntimeError("Debe de ejecutarse antes .get_corr()")
+
+        # FHR
+        print("1 -> Extrayendo características de FHR")
+        signals_fhr = [ctg.fhr for ctg in self.ctgs]
+        names, feat_fhr = extract_all_signal_features(signals_fhr, get_names=get_names)
+
+        name_fhr = [f"{name}_FHR" for name in names]
+
+        # FHR'
+        print("2 -> Extrayendo características de FHR'")
+        signals_fhr_prima = [np.diff(ctg.fhr) for ctg in self.ctgs]
+        names, feat_fhr_prima = extract_all_signal_features(
+            signals_fhr_prima, get_names=get_names
+        )
+
+        name_fhr_prima = [f"{name}_FHR_prima" for name in names]
+
+        # UC
+        print("3 -> Extrayendo características de UC")
+        signals_uc = [ctg.uc for ctg in self.ctgs]
+        names, feat_uc = extract_all_signal_features(signals_uc, get_names=get_names)
+
+        name_uc = [f"{name}_UC" for name in names]
+
+        # Corr
+        print("4 -> Extrayendo características de Corr (FHR y UC)")
+        signals_corr = [ctg.corr_fhr_uc for ctg in self.ctgs]
+        names, feat_corr = extract_all_signal_features(
+            signals_corr, get_names=get_names
+        )
+
+        name_corr = [f"{name}_CORR" for name in names]
+
+        # Corr Prima
+        print("5 -> Extrayendo características de Corr (FHR' y UC)")
+        signals_corr_prima = [ctg.corr_fhr_prima_uc for ctg in self.ctgs]
+        names, feat_corr_prima = extract_all_signal_features(
+            signals_corr_prima, get_names=get_names
+        )
+
+        name_corr_prima = [f"{name}_CORR_PRIMA" for name in names]
+
+        # Clinicas
+        print("6 -> Extrayendo características Clínicas")
+        ids = [ctg.id for ctg in self.ctgs]
+        name_clinicas, feat_clinicas = extract_clinical_features(
+            ids, get_names=get_names
+        )
+
+        # Resultados finales
+        names = (
+            name_fhr
+            + name_fhr_prima
+            + name_uc
+            + name_corr
+            + name_corr_prima
+            + name_clinicas
+        )
+        feat = np.hstack(
+            (
+                feat_fhr,
+                feat_fhr_prima,
+                feat_uc,
+                feat_corr,
+                feat_corr_prima,
+                feat_clinicas,
+            )
+        )
+
+        return names, feat
 
     def prepare_model_data(self):
         """
@@ -304,24 +390,26 @@ class DF_CTG:
         # TODO: one_ctg_analisis borrar
         # TODO: incluir graph
 
-        len_uc = len(self.ctgs[0].uc)
-        # eje_x = len_uc / (4 * 60)
-        eje_x = max_desplazamiento
+        max_desplazamiento = self.config.correlation.max_sec_displacement
+        max_desplazamiento = 60  # borrar
+
         contador_error = 0
+
+        ctg_with_corr = []
 
         # Creamos una figura con 2 filas y 1 columna. sharex=True hace que compartan el eje X.
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
         # Configuración del gráfico de ARRIBA (UC vs FHR)
-        ax1.set_ylim(-1.1, 0.75)
-        ax1.set_xlim(0, eje_x)
+        ax1.set_ylim(-1.1, 1.1)
+        ax1.set_xlim(-max_desplazamiento, max_desplazamiento)
         ax1.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax1.set_title("Correlación de la FHR y UC")
         ax1.set_ylabel("Correlación (FHR)")
         ax1.grid(True, alpha=0.3)
 
         # Configuración del gráfico de ABAJO (UC vs FHR')
-        ax2.set_ylim(-0.26, 0.1)
+        ax2.set_ylim(-1.1, 1.1)
         ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax2.set_title("Correlación de la Derivada FHR' y UC")
         ax2.set_xlabel("Desplazamiento en minutos")
@@ -335,10 +423,12 @@ class DF_CTG:
                 ax2,
                 contador_error,
                 one_ctg_analisis=False,
-                max_desplazamiento=max_desplazamiento,
             )
+
             if res == -1:
                 contador_error = contador_error + 1
+            else:
+                ctg_with_corr.append(ctg)
 
         # Ajusta el diseño para que los títulos y etiquetas no se solapen
         fig.tight_layout()
@@ -346,9 +436,7 @@ class DF_CTG:
 
         print("Señales saltadas: ", contador_error, " / ", len(self.ctgs))
 
-    # Funciones del github de correlaciones --> BORRAR
-
-    # FIN BORRAR
+        self.ctgs = ctg_with_corr
 
     ## ---------------------------------------------
     ## --------------- SMOOTHE METODS --------------
