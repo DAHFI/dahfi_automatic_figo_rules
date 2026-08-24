@@ -15,6 +15,7 @@ import skfda
 import numpy as np
 import matplotlib.pyplot as plt
 from skfda.representation.basis import Fourier
+from skfda.representation.basis import BSpline
 
 from skfda import FDataGrid
 from skfda.preprocessing.missing import MissingValuesInterpolation
@@ -129,18 +130,24 @@ class CTG:
             )
 
         return 0
+    
+    def get_fhr_prima(self):
+        return np.diff(self.fhr)
+
 
     ## ---------------------------------------------
     ## --------------- PREPROCESSING ---------------
 
-    def preprocess_signal(self):
+    def preprocess_signal(self, prep_type=None):
         # si devuelve 1 --> Error
         # si devuelve 0 --> Ok
 
         ## Leemos la configuración ##
         freq = self.config.freq
 
-        prep_type = self.config.preprocessing.prep_type
+        if prep_type == None:
+            prep_type = self.config.preprocessing.prep_type
+
         cut_time = self.config.preprocessing.cut_time
         rm_tail_nan = self.config.preprocessing.rm_tail_nan
 
@@ -191,6 +198,12 @@ class CTG:
                 fhr_aux = self._fourier_prep(fhr_aux)
                 uc_aux = self._fourier_prep(uc_aux)
 
+            case "SPLINES":
+                self._preprocess_type = "SPLINES"
+
+                fhr_aux = self._splines_prep(fhr_aux)
+                uc_aux = self._splines_prep(uc_aux)
+
         # Guardamos los resultados
         self._time = np.arange(0, len(fhr_aux) / freq, 1 / freq)
 
@@ -199,9 +212,34 @@ class CTG:
 
         return 0
 
+    def _splines_prep(self, signal):
+        n_basis = self.config.preprocessing.fourier_num_bases
+        threshold = (self.config.preprocessing.max_sec_gaps * self.config.freq) + 1
+
+        nan_mask = np.isnan(signal)
+
+        fd = FDataGrid(data_matrix=[signal])
+        interpolator = MissingValuesInterpolation()
+        fd_interpolated = interpolator.fit_transform(fd)
+        signal = fd_interpolated.data_matrix[0, :, 0]
+
+        fd_basis_spline = fd_interpolated.to_basis(BSpline(n_basis=n_basis)).to_grid(
+            grid_points=fd.grid_points
+        )
+
+        signals = fd_basis_spline.data_matrix[0, :, 0]
+
+        labeled_gaps, _ = label(nan_mask)
+        gap_sizes = np.bincount(labeled_gaps)
+        big_gaps = np.where(gap_sizes > threshold)[0]
+        big_gaps = big_gaps[big_gaps != 0]
+        big_gaps_mask = np.isin(labeled_gaps, big_gaps)
+
+        return np.where(big_gaps_mask, np.nan, signals).flatten()
+
     def _fourier_prep(self, signal):
         n_basis = self.config.preprocessing.fourier_num_bases
-        threshold = self.config.preprocessing.max_sec_gaps * self.config.freq
+        threshold = (self.config.preprocessing.max_sec_gaps * self.config.freq) + 1
 
         # Tratamos los nan -> interpolamos todos los nans guardando las posiciones donde están
         nan_mask = np.isnan(signal)  # Guardamos las posiciones de los NaNs
@@ -215,9 +253,9 @@ class CTG:
         fd_basis_fourier = fd_interpolated.to_basis(Fourier(n_basis=n_basis)).to_grid(
             grid_points=fd.grid_points
         )
-        signals = fd_basis_fourier.evaluate(fd_basis_fourier.grid_points[0]).squeeze(
-            axis=2
-        )
+        signals = fd_basis_fourier.data_matrix[0, :, 0]
+
+        # La fila anterior creo que se puede cambiar por -> signals = fd_basis_fourier.data_matrix[0, :, 0]
 
         # Recuperamos los nan mayores del threshold
         labeled_gaps, _ = label(nan_mask)
@@ -242,11 +280,11 @@ class CTG:
 
         # Comprobando que al menos hay tantos datos distintos de nan como el límite (normalmente 30% min)
         # Si más del 70% de los datos son nan, ponemos el valor de la corerlación a nan
-        if indices_validos.sum() < not_nans_threshold:
-            print(
-                f"WARNING (ctg id: {self.id}): Más del {(1 - 0.3)*100}% de la señal es NaN."
-            )
-            # return np.nan
+        # if indices_validos.sum() < not_nans_threshold:
+        #     print(
+        #         f"WARNING (ctg id: {self.id}): Más del {(1 - 0.3)*100}% de la señal es NaN."
+        #     )
+        # return np.nan
 
         return np.corrcoef(x[indices_validos], y_shift[indices_validos])[0][1]
 
@@ -261,6 +299,19 @@ class CTG:
         lags_index_max_abs = lags[index_max_abs]
         index_closer_0 = np.argmin(np.abs(lags_index_max_abs))
         res_index = index_max_abs[index_closer_0]
+
+        # lag con el que se alcanza el valor max en abs, y el valor máximo en abs (se devuelve con signo)
+        return lags[res_index], corr_signal[res_index]
+
+    @staticmethod
+    def _get_min_corr_lag(corr_signal, lags):
+        min = np.nanargmin(corr_signal)
+
+        # Nos quedamos con el indice que este más cercano al 0, por ambos lados
+        index_min = np.where(np.isclose(corr_signal, corr_signal[min]))[0]
+        lags_index_min = lags[index_min]
+        index_closer_0 = np.argmin(np.abs(lags_index_min))
+        res_index = index_min[index_closer_0]
 
         # lag con el que se alcanza el valor max en abs, y el valor máximo en abs (se devuelve con signo)
         return lags[res_index], corr_signal[res_index]
@@ -335,12 +386,12 @@ class CTG:
         ax2=None,
         contador_error=0,
         one_ctg_analisis=True,
+        plot_graph=True,
     ):
         fhr = self.fhr
         uc = self.uc
         tiempo = np.arange(len(uc))  # Para los gráficos
-        # max_lags = self.config.correlation.max_sec_displacement * 4
-        max_lags = 60 * 4
+        max_lags = self.config.correlation.max_sec_displacement * 4
 
         fhr_prima = np.diff(fhr)
         uc_prima = uc[1:]
@@ -350,16 +401,6 @@ class CTG:
             if one_ctg_analisis:
                 print(
                     "Señal plana o inválida.",
-                )
-            else:
-                ct = contador_error + 1
-                print(
-                    ct,
-                    ": Señal ",
-                    int(self.id),
-                    " ( ph = ",
-                    self.ph,
-                    ") plana o inválida.",
                 )
             return -1
 
@@ -383,11 +424,18 @@ class CTG:
         )
 
         # Sacamos el menor número y el indice al que corresponde
-        lag_max_abs_corr_fhr_uc, max_abs_corr_fhr_uc = self._get_max_corr_lag(
+        # lag_max_abs_corr_fhr_uc, max_abs_corr_fhr_uc = self._get_max_corr_lag(
+        #     corr_fhr_curva, lags
+        # )
+        # lag_max_abs_corr_fhr_prima_uc, max_abs_corr_fhr_prima_uc = (
+        #     self._get_max_corr_lag(corr_fhr_prima_curva, lags)
+        # )
+
+        lag_min_corr_fhr_uc, min_corr_fhr_uc = CTG._get_min_corr_lag(
             corr_fhr_curva, lags
         )
-        lag_max_abs_corr_fhr_prima_uc, max_abs_corr_fhr_prima_uc = (
-            self._get_max_corr_lag(corr_fhr_prima_curva, lags)
+        lag_min_corr_fhr_prima_uc, min_corr_fhr_prima_uc = CTG._get_min_corr_lag(
+            corr_fhr_prima_curva, lags
         )
 
         # Sacamos gráficas
@@ -398,11 +446,11 @@ class CTG:
                 tiempo,
                 lags,
                 corr_fhr_curva,
-                max_abs_corr_fhr_uc,
-                lag_max_abs_corr_fhr_uc,
+                min_corr_fhr_uc,
+                lag_min_corr_fhr_uc,
                 corr_fhr_prima_curva,
-                max_abs_corr_fhr_prima_uc,
-                lag_max_abs_corr_fhr_prima_uc,
+                min_corr_fhr_prima_uc,
+                lag_min_corr_fhr_prima_uc,
             )
 
         if not one_ctg_analisis:
@@ -414,8 +462,8 @@ class CTG:
                 color = "green"
 
             ax1.scatter(
-                lag_max_abs_corr_fhr_uc / 4,
-                max_abs_corr_fhr_uc,
+                lag_min_corr_fhr_uc / 4,
+                min_corr_fhr_uc,
                 c=color,
                 s=10,
                 alpha=0.5,
@@ -423,18 +471,19 @@ class CTG:
 
             # Pintamos en el gráfico de abajo (Derivada FHR')
             ax2.scatter(
-                lag_max_abs_corr_fhr_prima_uc / 4,
-                max_abs_corr_fhr_prima_uc,
+                lag_min_corr_fhr_prima_uc / 4,
+                min_corr_fhr_prima_uc,
                 c=color,
                 s=10,
                 alpha=0.5,
             )
 
         # Guardamos
+        self.lags_corr = lag_min_corr_fhr_uc  # BORRAR
         self.corr_fhr_uc = corr_fhr_curva
         self.corr_fhr_prima_uc = corr_fhr_prima_curva
 
-        return max_abs_corr_fhr_uc, lag_max_abs_corr_fhr_uc
+        return min_corr_fhr_uc, lag_min_corr_fhr_uc
 
     ## ---------------------------------------------
     ## ------------------ SMOOTHE ------------------
@@ -1030,6 +1079,7 @@ class CTG:
         ax1.set_ylabel("FHR", fontsize=14)
         ax1.grid(True)
         ax1.tick_params(axis="both", labelsize=13)
+        ax1.set_ylim(40, 180)
 
         # Plot UC (first half)
         ax2 = axs[1]
@@ -1037,6 +1087,7 @@ class CTG:
         ax2.set_ylabel("UC", fontsize=14)
         ax2.grid(True)
         ax2.tick_params(axis="both", labelsize=13)
+        ax2.set_ylim(0, 100)
 
         # Plot FHR (second half)
         ax3 = axs[2]
@@ -1044,6 +1095,7 @@ class CTG:
         ax3.set_ylabel("FHR", fontsize=14)
         ax3.grid(True)
         ax3.tick_params(axis="both", labelsize=13)
+        ax3.set_ylim(40, 180)
 
         # Plot UC (second half)
         ax4 = axs[3]
@@ -1052,6 +1104,7 @@ class CTG:
         ax4.set_ylabel("UC", fontsize=14)
         ax4.grid(True)
         ax4.tick_params(axis="both", labelsize=13)
+        ax4.set_ylim(0, 100)
 
         # Add a global title with the CTG identifier
         title = "CTG: " + str(self.id)

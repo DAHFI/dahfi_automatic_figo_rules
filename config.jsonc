@@ -19,7 +19,7 @@
     "min_value_uc" : 0,
 
     // Preprocesing 
-    "prep_type" : "FIGO", // FIGO, FB_FOURIER , comert, comert_gaps, dahfi_llrs, dahfi_bspline, dahfi_fourier, dahfi_gaps, dahfi_llrs_gaps, dahfi_bspline_gaps, dahfi_fourier_gaps
+    "prep_type" : "SPLINES", // FIGO, FB_FOURIER, SPLINES, comert, comert_gaps, dahfi_llrs, dahfi_bspline, dahfi_fourier, dahfi_gaps, dahfi_llrs_gaps, dahfi_bspline_gaps, dahfi_fourier_gaps
     "cut_time" : 30,
     "max_sec_gaps": 15, // en segundos
     "rm_tail_nan": true, 

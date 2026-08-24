@@ -1,4 +1,5 @@
 import sys
+import copy
 import commentjson
 import numpy as np
 import pandas as pd
@@ -12,6 +13,7 @@ from matplotlib import pyplot as plt
 from sklearn.metrics import roc_curve, auc
 from typing import Union, Optional, Dict, Tuple
 from sklearn.feature_selection import mutual_info_classif
+
 from utils.features import extract_all_signal_features, extract_clinical_features
 
 
@@ -20,14 +22,17 @@ class DF_CTG:
     def __init__(
         self,
         config_file: str,
+        additional_config={},
     ):
 
         self.ctgs = []
         # self.phs = []  # TODO: BORRAR
         # self.clinical_data = []  # TODO: BORRAR
 
+        self.additional_config = additional_config
+
         try:
-            with open("config.jsonc", "r", encoding="utf-8") as file:
+            with open(config_file, "r", encoding="utf-8") as file:
                 config = AppConfig(commentjson.load(file))
                 self.config = config
 
@@ -86,17 +91,17 @@ class DF_CTG:
                 )
                 continue
 
-            fhr = fhr_df.loc[index][:max_num_data]
-            uc = uc_df.loc[index][:max_num_data]
+            fhr = fhr_df.loc[index].iloc[-max_num_data:]
+            uc = uc_df.loc[index].iloc[-max_num_data:]
             clinical_data = clinical_df.loc[index]
 
             ph = float(clinical_data["ph"])
 
             self.new_ctg(fhr, uc, clinical_data, ph, index)
             num_ctg_created += 1
-            print(f"{index} created! Total success: {num_ctg_created}")
+            # print(f"{index} created! Total success: {num_ctg_created}")
 
-        print(num_ctg_created, "ctg created!")
+        print("Reading Completed: ", num_ctg_created, "ctg created")
 
     def new_ctg(
         self,
@@ -139,6 +144,9 @@ class DF_CTG:
         # Append the new CTG and its pH value to the lists
         self.ctgs.append(ctg)
 
+    def copy(self):
+        return copy.deepcopy(self)
+
     ## ----------------------------------------------
     ## ------------ GET DATA TF STYLE ---------------
 
@@ -149,7 +157,9 @@ class DF_CTG:
         return (ph < 7.2).astype(int)
 
     def get_corr_curves_and_ph(self):
-        print("Para obtener estas curvas antes hay que ejecutar get_corr()")
+        if not hasattr(self.ctgs[0], "corr_fhr_uc"):
+            print("Para obtener estas curvas antes hay que ejecutar get_corr()")
+            self.get_corr()
 
         corr_curves = []
         ph = []
@@ -159,7 +169,7 @@ class DF_CTG:
             if np.isnan(ctg.corr_fhr_uc).all():
                 continue
 
-            print(ctg.id)
+            # print(ctg.id)
             corr_interp = np.interp(
                 np.arange(len(ctg.corr_fhr_uc)),
                 np.where(~np.isnan(ctg.corr_fhr_uc))[0],
@@ -171,12 +181,45 @@ class DF_CTG:
 
         return np.array(corr_curves), np.array([1 if x < 7.2 else 0 for x in ph])
 
+    def get_fhr_features(self):
+        signals_fhr = [ctg.fhr for ctg in self.ctgs]
+        names, feat_fhr = extract_all_signal_features(
+            signals_fhr, get_names=True, fhr=True
+        )
+
+        return names, feat_fhr
+
+    def get_fhr_prima_features(self):
+        signals_fhr_prima = [np.diff(ctg.fhr) for ctg in self.ctgs]
+        names, feat_fhr_prima = extract_all_signal_features(
+            signals_fhr_prima, get_names=True, fhr=False
+        )
+
+        return names, feat_fhr_prima
+
+    def get_uc_features(self):
+        signals_uc = [ctg.uc for ctg in self.ctgs]
+        names, feat_uc = extract_all_signal_features(
+            signals_uc, get_names=True, fhr=False
+        )
+
+        return names, feat_uc
+
+    def get_corr_features(self):
+        signals_corr = [ctg.corr_fhr_uc for ctg in self.ctgs]
+        names, feat_corr = extract_all_signal_features(
+            signals_corr, get_names=True, fhr=False
+        )
+
+        return names, feat_corr
+
+    def get_clinic_features(self):
+        ids = [ctg.id for ctg in self.ctgs]
+        name_clinicas, feat_clinicas = extract_clinical_features(ids, get_names=True)
+        return name_clinicas, feat_clinicas
+
     def get_all_features(self, get_names=True):
-        if hasattr(self.ctgs[0], "_preprocess_type"):
-            print(
-                f"Extrayendo las características usando el preprocesado: {self.ctgs[0]._preprocess_type}"
-            )
-        else:
+        if not hasattr(self.ctgs[0], "_preprocess_type"):
             print(
                 "WARNING!! : Se están extrayendo las características usando señales sin preprocesar..."
             )
@@ -184,51 +227,51 @@ class DF_CTG:
         if not hasattr(self.ctgs[0], "corr_fhr_uc") or not hasattr(
             self.ctgs[0], "corr_fhr_prima_uc"
         ):
-            raise RuntimeError("Debe de ejecutarse antes .get_corr()")
+            print("Extrayendo las curvas de correlaciones!!")
+            self.get_corr()
+            # raise RuntimeError("Debe de ejecutarse antes .get_corr()")
 
         # FHR
-        print("1 -> Extrayendo características de FHR")
         signals_fhr = [ctg.fhr for ctg in self.ctgs]
-        names, feat_fhr = extract_all_signal_features(signals_fhr, get_names=get_names)
+        names, feat_fhr = extract_all_signal_features(
+            signals_fhr, get_names=get_names, fhr=True
+        )
 
         name_fhr = [f"{name}_FHR" for name in names]
 
         # FHR'
-        print("2 -> Extrayendo características de FHR'")
         signals_fhr_prima = [np.diff(ctg.fhr) for ctg in self.ctgs]
         names, feat_fhr_prima = extract_all_signal_features(
-            signals_fhr_prima, get_names=get_names
+            signals_fhr_prima, get_names=get_names, fhr=False
         )
 
         name_fhr_prima = [f"{name}_FHR_PRIMA" for name in names]
 
         # UC
-        print("3 -> Extrayendo características de UC")
         signals_uc = [ctg.uc for ctg in self.ctgs]
-        names, feat_uc = extract_all_signal_features(signals_uc, get_names=get_names)
+        names, feat_uc = extract_all_signal_features(
+            signals_uc, get_names=get_names, fhr=False
+        )
 
         name_uc = [f"{name}_UC" for name in names]
 
         # Corr
-        print("4 -> Extrayendo características de Corr (FHR y UC)")
         signals_corr = [ctg.corr_fhr_uc for ctg in self.ctgs]
         names, feat_corr = extract_all_signal_features(
-            signals_corr, get_names=get_names
+            signals_corr, get_names=get_names, fhr=False
         )
 
         name_corr = [f"{name}_CORR" for name in names]
 
         # Corr Prima
-        print("5 -> Extrayendo características de Corr (FHR' y UC)")
         signals_corr_prima = [ctg.corr_fhr_prima_uc for ctg in self.ctgs]
         names, feat_corr_prima = extract_all_signal_features(
-            signals_corr_prima, get_names=get_names
+            signals_corr_prima, get_names=get_names, fhr=False
         )
 
         name_corr_prima = [f"{name}_CORR_PRIMA" for name in names]
 
         # Clinicas
-        print("6 -> Extrayendo características Clínicas")
         ids = [ctg.id for ctg in self.ctgs]
         name_clinicas, feat_clinicas = extract_clinical_features(
             ids, get_names=get_names
@@ -254,25 +297,34 @@ class DF_CTG:
             )
         )
 
-        # Guardamos
-
         self.names_features = names
         self.features = feat
 
+        print(f"Features calculated: {len(names)}")
+
         return np.array(names), feat
 
-    def get_mrmr_features(self, num_features=30):
-        if not hasattr(self, "features"):
-            self.get_all_features()
+    def get_mrmr_features(self, num_features=30, get_names=False):
+        # if not hasattr(self, "features"):
+        # self.get_all_features()
 
         df_featues = pd.DataFrame(self.features, columns=self.names_features)
         labels = self.get_labels_array()
 
-        features_seleccionadas = mrmr_classif(X=df_featues, y=labels, K=num_features)
+        features_seleccionadas = mrmr_classif(
+            X=df_featues, y=labels, K=num_features, show_progress=False
+        )
 
-        print("=== CARACTERÍSTICAS SELECCIONADAS POR mRMR ===")
-        for i, feat in enumerate(features_seleccionadas, start=1):
-            print(f"{i}. {feat}")
+        # print(
+        #     f"=== CARACTERÍSTICAS SELECCIONADAS POR mRMR (num_feat = {num_features}) ==="
+        # )
+        # for i, feat in enumerate(features_seleccionadas, start=1):
+        #     print(f"{i}. {feat}")
+
+        # print("\n")
+
+        if get_names:
+            return features_seleccionadas
 
         return df_featues[features_seleccionadas].values
 
@@ -308,6 +360,50 @@ class DF_CTG:
         )
 
         return X, y
+
+    def get_fhr(self):
+        fhr = []
+
+        for ctg in self.ctgs:
+            fhr.append(ctg.fhr)
+
+        return np.array(fhr)
+
+    def get_uc(self):
+        uc = []
+        for ctg in self.ctgs:
+            uc.append(ctg.uc)
+
+        return np.array(uc)
+
+    def get_fhr_prima(self):
+        fhr_prima = []
+
+        for ctg in self.ctgs:
+            fhr_prima.append(ctg.get_fhr_prima())
+
+        return np.array(fhr_prima)
+
+    def get_corr_curves(self):
+        corr_fhr_uc = []
+        for ctg in self.ctgs:
+            corr_fhr_uc.append(ctg.corr_fhr_uc)
+
+        return np.array(corr_fhr_uc)
+
+    def get_corr_prima_curves(self):
+        corr_fhr_uc = []
+        for ctg in self.ctgs:
+            corr_fhr_uc.append(ctg.corr_fhr_prima_uc)
+
+        return np.array(corr_fhr_uc)
+
+    def get_pH(self):
+        ph = []
+        for ctg in self.ctgs:
+            ph.append(ctg.ph)
+
+        return np.array(ph)
 
     ## ----------------------------------------------
     ## --------------- TEST FUNCTIONS ---------------
@@ -353,9 +449,7 @@ class DF_CTG:
     ## ---------------------------------------------
     ## --------------- PREPROCESSING ---------------
 
-    def preprocess_ctgs(
-        self,
-    ) -> None:
+    def preprocess_ctgs(self, prep_type=None) -> None:
         """
         Preprocess stored CTG records based on specified rules.
 
@@ -373,12 +467,22 @@ class DF_CTG:
             None: This method modifies CTGs in place and does not return anything.
         """
 
-        prep_type = self.config.preprocessing.prep_type
+        if "prep_type" in self.additional_config.keys():
+            prep_type = self.additional_config["prep_type"]
+
+        else:
+            prep_type = self.config.preprocessing.prep_type
+
+        # print(f"Preprocesando según: {prep_type}")
 
         new_ctgs_list = []
 
+        num_error = 0
+        id_error = []
+        original_size = len(self.get_fhr())
+
         # Define supported rule types
-        correct_rules_type = ["FIGO", "FB_FOURIER"]
+        correct_rules_type = ["FIGO", "FB_FOURIER", "SPLINES"]
 
         # Validate input rule type
         if prep_type not in correct_rules_type:
@@ -386,22 +490,32 @@ class DF_CTG:
 
         # Apply FIGO-specific preprocessing to each CTG
         for ctg in self.ctgs:
-            error_code = ctg.preprocess_signal()
+            error_code = ctg.preprocess_signal(prep_type=prep_type)
 
             if error_code == 0:
                 new_ctgs_list.append(ctg)
+            else:
+                num_error = num_error + 1
+                id_error.append(ctg.id)
 
         self.ctgs = new_ctgs_list
+
+        print(
+            f"{prep_type} preprocessing completed: {num_error}/{original_size} skipped as invalid (id= {id_error})"
+        )
 
     ## ---------------------------------------------
     ## -------------- CORR FUNCTION ----------------
 
-    def get_corr(self, max_desplazamiento=5, graph=False):
+    def get_corr(self):
         # TODO: one_ctg_analisis borrar
         # TODO: incluir graph
 
+        if hasattr(self.ctgs[0], "corr_fhr_uc"):
+            print("The correlation curves have already been previously calculated...")
+            return None
+
         max_desplazamiento = self.config.correlation.max_sec_displacement
-        max_desplazamiento = 60  # borrar
 
         contador_error = 0
 
@@ -422,31 +536,100 @@ class DF_CTG:
         ax2.set_ylim(-1.1, 1.1)
         ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax2.set_title("Correlación de la Derivada FHR' y UC")
-        ax2.set_xlabel("Desplazamiento en minutos")
+        ax2.set_xlabel("Desplazamiento en segundos")
         ax2.set_ylabel("Correlación (FHR')")
         ax2.grid(True, alpha=0.3)
+
+        ids_ctg_error = []
+        original_size = len(self.get_fhr())
 
         # Pasamos ambos ejes a la función interna para que dibuje en los dos
         for ctg in self.ctgs:
             res = ctg.get_corr_fun(
                 ax1,
                 ax2,
-                contador_error,
+                contador_error=contador_error,
                 one_ctg_analisis=False,
+                plot_graph=True,
             )
 
             if res == -1:
                 contador_error = contador_error + 1
+
+                ids_ctg_error.append(ctg.id)
             else:
                 ctg_with_corr.append(ctg)
 
         # Ajusta el diseño para que los títulos y etiquetas no se solapen
         fig.tight_layout()
-        fig.show()
+        # fig.show()
+        plt.close(fig)
 
-        print("Señales saltadas: ", contador_error, " / ", len(self.ctgs))
+        # print("Señales saltadas: ", contador_error, " / ", len(self.ctgs))
 
         self.ctgs = ctg_with_corr
+
+        print(
+            f"Calculated correlation curves: {contador_error}/{original_size} skipped as invalid (id= {ids_ctg_error})"
+        )
+
+    def plot_histogram_corr(self):
+
+        if not hasattr(self.ctgs[0], "corr_fhr_uc"):
+            print("Ejecuta antes get_corr()")
+            return None
+
+        lags_sano = []
+        lags_patolog = []
+
+        for ctg in self.ctgs:
+            if ctg.ph < self.config.ph_limit:
+                lags_patolog.append(ctg.lags_corr / 4)
+            else:
+                lags_sano.append(ctg.lags_corr / 4)
+
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+
+        # 1. Pintamos el lote Sano (Verde) con sus argumentos directos
+        ax.hist(
+            lags_sano,
+            bins=50,
+            range=(-60, 60),
+            density=True,
+            alpha=0.5,
+            color="green",
+            label="Sano",
+            edgecolor="darkgreen",
+        )
+
+        # 2. Pintamos el lote Patológico (Rojo) con sus argumentos directos
+        ax.hist(
+            lags_patolog,
+            bins=50,
+            range=(-60, 60),
+            density=True,
+            alpha=0.5,
+            color="red",
+            label="Patológico",
+            edgecolor="darkred",
+        )
+
+        # 3. Decoración del gráfico
+        ax.set_title(
+            "Histograma Correlación FHR y UC",
+            fontsize=12,
+            fontweight="bold",
+        )
+        ax.set_xlabel("Desplazamiento en segundos")
+        ax.set_ylabel("Frecuencia")
+        ax.grid(True, linestyle=":", alpha=0.6)
+        ax.legend()
+
+        plt.tight_layout()
+
+        plt.savefig("corr_hist_fhr.pdf", format="pdf", bbox_inches="tight")
+
+        plt.show()
 
     ## ---------------------------------------------
     ## --------------- SMOOTHE METODS --------------
@@ -864,109 +1047,82 @@ class DF_CTG:
 
         return perc_normal, perc_suspicious, perc_pathological
 
-    def _plot_roc_graph(
-        self,
-        data_perc: dict,
-        ph_limit: float = 7.20,
-        title: str = None,
-        only_conclusion: bool = False,
-    ) -> None:
+    def _plot_roc_graph(self, data_perc, ph_limit, title, only_conclusion=False):
+        """Plot the ROC curve comparing fetal hypoxia classification based on umbilical
+        artery pH (phs_class) against the calculated CTG rule percentages.
         """
-        Plot ROC curves comparing label percentages against hypoxia presence (ph_limit threshold).
+        import matplotlib.pyplot as plt
+        from sklearn.metrics import roc_curve, auc
+        import numpy as np
 
-        Args:
-            data_perc (dict):
-            ph_limit (float): Threshold of pH to define hypoxia presence.
-            title (Optional[str]): Title for the plots.
+        color = {
+            "baseline": "#2849C1",
+            "variability": "#E04A3F",
+            "deceleration": "#388E3C",
+            "conclusion": "#F58220",
+        }
 
-        Returns:
-            None: This function displays ROC curve plots and does not return a value.
-        """
+        # Retrieve and binarize the ground truth pH labels based on the ph_limit threshold
+        # (Assuming self.phs contains the pH values of the dataset)
+        phs_class = np.where(self.get_pH() < ph_limit, 1.0, 0.0)
 
-        # Create boolean array: True where CTG pH is less or equal to ph_limit (indicating hypoxia)
-        phs_class = [
-            x <= ph_limit for x in self.phs
-        ]  # BORRAR: Si el ph es menor que 7.2 (Patológico) lo guardamos como 1
+        plt.figure(figsize=(8, 6))
 
-        plt.figure(figsize=(12, 12))  # TODO: Quitar
+        for key, value in data_perc.items():
+            if only_conclusion and key != "conclusion":
+                continue
 
-        plt.plot([0, 1], [0, 1], "k--", label="Random")
+            # Convert to numpy arrays to guarantee alignment and safe indexing
+            y_true = np.array(phs_class, dtype=float)
+            y_score = np.array(value, dtype=float)
 
-        if only_conclusion:
-            fpr, tpr, _ = roc_curve(phs_class, data_perc["conclusion"])
+            # 1. Align and filter out NaNs from both arrays simultaneously
+            valid_mask = ~np.isnan(y_true) & ~np.isnan(y_score)
+            y_true_clean = y_true[valid_mask]
+            y_score_clean = y_score[valid_mask]
 
-            # Calculate area under the curve (AUC) metric
+            # 2. Critical Validation: Ensure we have samples and both classes are present (0 and 1)
+            unique_classes = np.unique(y_true_clean)
+
+            if len(y_true_clean) == 0:
+                print(
+                    f"[WARN - {key}] No valid pH or CTG percentage data found for ROC. Skipping..."
+                )
+                continue
+
+            if len(unique_classes) < 2:
+                print(
+                    f"[WARN - {key}] ROC requires both classes (0 and 1). Only found {unique_classes}. Skipping..."
+                )
+                continue
+
+            # 3. Compute ROC curve safely
+            fpr, tpr, _ = roc_curve(y_true_clean, y_score_clean, pos_label=1)
+
+            # Calculate Area Under the Curve (AUC)
             roc_auc = auc(fpr, tpr)
 
-            # Plot ROC curve with label showing category and AUC score
+            # Plot individual feature curve
             plt.plot(
                 fpr,
                 tpr,
-                color="#2849C1",
-                # label="ROC curve %s (AUC = %0.2f)" % ("conclusion", roc_auc),
-                label="ROC Automatic Model (AUC = %0.2f)" % roc_auc,
+                color=color.get(key, "#757575"),
+                lw=2,
+                label=f"{key.capitalize()} (AUC = {roc_auc:.2f})",
             )
 
-            plt.fill_between(fpr, 0, tpr, color="#2849C1", alpha=0.3)
-
-        else:
-
-            color = {
-                "baseline": "#2849C1",
-                "variability": "#E04A3F",
-                "deceleration": "#388E3C",
-                "conclusion": "#F58220",
-            }
-
-            for key, value in data_perc.items():
-                # Unpack suspicious and pathological percentages, ignoring normal here
-                # _, perc_sick = value
-
-                # Compute ROC curve values comparing hypoxia label to suspicious+pathological combined
-                fpr, tpr, _ = roc_curve(phs_class, value)
-
-                # Calculate area under the curve (AUC) metric
-                roc_auc = auc(fpr, tpr)
-
-                # Plot ROC curve with label showing category and AUC score
-                plt.plot(
-                    fpr,
-                    tpr,
-                    color=color[key],
-                    linewidth=1.5,
-                    label="ROC curve %s (AUC = %0.2f)" % (key, roc_auc),
-                )
+        # Draw the diagonal random-guess reference line
+        plt.plot([0, 1], [0, 1], color="navy", lw=1.5, linestyle="--")
 
         plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.0])
-
-        plt.xticks(fontsize=25)
-        plt.yticks(np.arange(0.2, 1.2, 0.2), fontsize=25)
-
-        plt.xlabel("False Positive Rate", fontsize=25)
-        plt.ylabel("True Positive Rate", fontsize=25)
-
-        plt.title(title, fontsize=25)
-        # plt.legend(loc="lower right", fontsize=15)
-
-        # Leyenda debajo de la gráfica
-        # plt.legend(
-        #     loc="upper center",  # posición de referencia
-        #     bbox_to_anchor=(0.5, -0.15),  # 0.5 = centro horizontal, -0.15 = fuera abajo
-        #     ncol=1,  # número de columnas en la leyenda
-        #     fontsize=14,
-        # )
-
-        plt.legend(
-            loc="lower right",  # Posición fija dentro del recuadro
-            ncol=1,  # Una sola columna
-            fontsize=20,
-        )
-
-        save_name = "curve_model.pdf"
-
-        # Save plot
-        plt.savefig(save_name, format="pdf", bbox_inches="tight")
+        plt.ylim([0.0, 1.05])
+        plt.xlabel("False Positive Rate", fontsize=12)
+        plt.ylabel("True Positive Rate", fontsize=12)
+        plt.title(f"{title} (pH Limit: {ph_limit})", fontsize=14)
+        plt.legend(loc="lower right", fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
 
     ## ---------------------------------------------
     ## ------------- GRAPH FUNCTION ----------------
@@ -1110,8 +1266,8 @@ class DF_CTG:
 
     def _get_mutual_information(self):
 
-        if not hasattr(self, ".features"):
-            self.get_all_features()
+        # if not hasattr(self, ".features"):
+        # self.get_all_features()
 
         nombres_features = self.names_features
         X = self.features
