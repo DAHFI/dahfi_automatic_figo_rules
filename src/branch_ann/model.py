@@ -108,7 +108,7 @@ class FusionNet(nn.Module):
         # -------------------------------------------------------------------------------------------------------------------
         # input -> 64 -> ReLU -> 16 -> ReLU -> 1
 
-        self.clasificador = nn.Sequential(
+        self.classifier = nn.Sequential(
             nn.Linear(in_clf_dim, 64),
             nn.ReLU(),
             nn.Linear(64, 16),
@@ -130,4 +130,4 @@ class FusionNet(nn.Module):
 
             x = inputs[0]
 
-        return self.clasificador(x)
+        return self.classifier(x)

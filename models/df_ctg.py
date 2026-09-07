@@ -187,6 +187,9 @@ class DF_CTG:
             signals_fhr, get_names=True, fhr=True
         )
 
+        self.fhr_name_features = names
+        self.fhr_features = feat_fhr
+
         return names, feat_fhr
 
     def get_fhr_prima_features(self):
@@ -194,6 +197,9 @@ class DF_CTG:
         names, feat_fhr_prima = extract_all_signal_features(
             signals_fhr_prima, get_names=True, fhr=False
         )
+
+        self.fhr_prima_name_features = names
+        self.fhr_prima_features = signals_fhr_prima
 
         return names, feat_fhr_prima
 
@@ -203,6 +209,9 @@ class DF_CTG:
             signals_uc, get_names=True, fhr=False
         )
 
+        self.uc_name_features = names
+        self.uc_features = feat_uc
+
         return names, feat_uc
 
     def get_corr_features(self):
@@ -211,14 +220,32 @@ class DF_CTG:
             signals_corr, get_names=True, fhr=False
         )
 
+        self.corr_name_features = names
+        self.corr_features = feat_corr
+
         return names, feat_corr
+
+    def get_corr_prima_features(self):
+        signals_corr_prima = [ctg.corr_fhr_prima_uc for ctg in self.ctgs]
+        names, feat_corr_prima = extract_all_signal_features(
+            signals_corr_prima, get_names=True, fhr=False
+        )
+
+        self.corr_prima_name_features = names
+        self.corr_prima_features = feat_corr_prima
+
+        return names, feat_corr_prima
 
     def get_clinic_features(self):
         ids = [ctg.id for ctg in self.ctgs]
         name_clinicas, feat_clinicas = extract_clinical_features(ids, get_names=True)
+
+        self.clinicas_name_features = name_clinicas
+        self.clinicas_features = feat_clinicas
+
         return name_clinicas, feat_clinicas
 
-    def get_all_features(self, get_names=True):
+    def get_all_features(self):
         if not hasattr(self.ctgs[0], "_preprocess_type"):
             print(
                 "WARNING!! : Se están extrayendo las características usando señales sin preprocesar..."
@@ -231,51 +258,30 @@ class DF_CTG:
             self.get_corr()
             # raise RuntimeError("Debe de ejecutarse antes .get_corr()")
 
-        # FHR
-        signals_fhr = [ctg.fhr for ctg in self.ctgs]
-        names, feat_fhr = extract_all_signal_features(
-            signals_fhr, get_names=get_names, fhr=True
-        )
+        get_names = True
 
+        # FHR
+        names, feat_fhr = self.get_fhr_features()
         name_fhr = [f"{name}_FHR" for name in names]
 
         # FHR'
-        signals_fhr_prima = [np.diff(ctg.fhr) for ctg in self.ctgs]
-        names, feat_fhr_prima = extract_all_signal_features(
-            signals_fhr_prima, get_names=get_names, fhr=False
-        )
-
+        names, feat_fhr_prima = self.get_fhr_prima_features()
         name_fhr_prima = [f"{name}_FHR_PRIMA" for name in names]
 
         # UC
-        signals_uc = [ctg.uc for ctg in self.ctgs]
-        names, feat_uc = extract_all_signal_features(
-            signals_uc, get_names=get_names, fhr=False
-        )
-
+        names, feat_uc = self.get_uc_features()
         name_uc = [f"{name}_UC" for name in names]
 
         # Corr
-        signals_corr = [ctg.corr_fhr_uc for ctg in self.ctgs]
-        names, feat_corr = extract_all_signal_features(
-            signals_corr, get_names=get_names, fhr=False
-        )
-
+        names, feat_corr = self.get_corr_features()
         name_corr = [f"{name}_CORR" for name in names]
 
         # Corr Prima
-        signals_corr_prima = [ctg.corr_fhr_prima_uc for ctg in self.ctgs]
-        names, feat_corr_prima = extract_all_signal_features(
-            signals_corr_prima, get_names=get_names, fhr=False
-        )
-
+        names, feat_corr_prima = self.get_corr_prima_features()
         name_corr_prima = [f"{name}_CORR_PRIMA" for name in names]
 
         # Clinicas
-        ids = [ctg.id for ctg in self.ctgs]
-        name_clinicas, feat_clinicas = extract_clinical_features(
-            ids, get_names=get_names
-        )
+        name_clinicas, feat_clinicas = self.get_clinic_features()
 
         # Resultados finales
         names = (
@@ -296,9 +302,6 @@ class DF_CTG:
                 feat_clinicas,
             )
         )
-
-        self.names_features = names
-        self.features = feat
 
         print(f"Features calculated: {len(names)}")
 

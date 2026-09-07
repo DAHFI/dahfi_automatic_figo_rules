@@ -1,5 +1,3 @@
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
 import itertools
@@ -8,200 +6,21 @@ import torch
 import torch.nn as nn
 
 from .model import FusionNet
-
-
-def make_loader(arrays, yy, batch_size=None, shuffle=False):
-    """
-    Creates a PyTorch DataLoader from input arrays and target values.
-
-    Parameters
-    ----------
-    arrays : list of array-like
-        List of input arrays containing the model features.
-    yy : array-like
-        Target values associated with the input samples.
-    batch_size : int, optional
-        Number of samples per batch. If None, the batch size is set to
-        min(200, len(yy)), following the default behavior used by sklearn.
-    shuffle : bool, default=False
-        Whether to shuffle the samples at the beginning of each epoch.
-
-    Returns
-    -------
-    torch.utils.data.DataLoader
-    DataLoader containing the input arrays and target values.
-    """
-
-    # The batch size is defined in this way so that it is the same as that of sklearn
-
-    if batch_size is None:
-
-        batch_size = min(200, len(yy))
-
-    tensors = [torch.tensor(a, dtype=torch.float32) for a in arrays] + [
-        torch.tensor(yy, dtype=torch.float32).unsqueeze(1)
-    ]
-
-    dataset = TensorDataset(*tensors)
-
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-
-
-# =======================================================================================================
-# =======================================================================================================
-
-
-def scale_split(arrays, tr_idx, eval_idx):
-    """
-    Scales input arrays using statistics fitted exclusively on the training data.
-
-    Parameters
-    ----------
-    arrays : list of array-like
-        List of input arrays to be scaled. The first dimension must correspond
-        to the samples.
-    tr_idx : array-like
-        Indices of the samples used to fit the StandardScaler.
-    eval_idx : array-like
-        Indices of the samples used to transform the evaluation data.
-
-    Returns
-    -------
-    scaled_tr : list of numpy.ndarray
-        List of scaled training arrays.
-    scaled_eval : list of numpy.ndarray
-        List of scaled evaluation arrays.
-
-    Notes
-    -----
-    A separate StandardScaler is fitted for each input array. The scaler is
-    fitted only on the training data to avoid data leakage, and the same
-    transformation is then applied to the evaluation data.
-    """
-
-    scaled_tr = []
-    scaled_eval = []
-
-    for X in arrays:
-
-        scaler = StandardScaler()
-
-        # The training data is used to adjust the scaler ...
-        X_train_scaled = scaler.fit_transform(X[tr_idx])
-        # ... and then that adjustment is applied to the evaluation data
-        X_eval_scaled = scaler.transform(X[eval_idx])
-
-        scaled_tr.append(X_train_scaled)
-        scaled_eval.append(X_eval_scaled)
-
-    return (scaled_tr, scaled_eval)
-
-
-# =======================================================================================================
-# =======================================================================================================
-
-
-def train_epoch(model, loader, optimizer, criterion):
-    """
-    Trains the model for one epoch using mini-batch gradient descent.
-
-    Parameters
-    ----------
-    model : torch.nn.Module
-        Neural network model to be trained.
-    loader : torch.utils.data.DataLoader
-        DataLoader providing the input batches and corresponding target values.
-    optimizer : torch.optim.Optimizer
-        Optimizer used to update the model parameters based on the computed
-        gradients.
-    criterion : torch.nn.Module
-        Loss function used to measure the difference between the model
-        predictions and the target values.
-
-    Returns
-    -------
-    None
-        The model parameters are updated in place during training.
-
-
-    Notes
-    -----
-    Gradient clipping is intentionally not applied in order to remain closer
-    to the training behavior of sklearn.
-    """
-
-    model.train()
-
-    for *Xs, yb in loader:
-
-        optimizer.zero_grad()
-
-        logits = model(*Xs)
-
-        loss = criterion(logits, yb)
-
-        loss.backward()
-
-        # NO GRADIENT CLIPPING: To get closer to the behavior of sklearn
-
-        # torch.nn.utils.clip_grad_norm_(
-        #     model.parameters(),
-        #     max_norm=1.0
-        # )
-
-        optimizer.step()
-
-
-# =======================================================================================================
-# =======================================================================================================
-
-
-@torch.no_grad()
-def predict(model, loader):
-    """
-    Generates probability predictions and retrieves the corresponding labels.
-
-    Parameters
-    ----------
-    model : torch.nn.Module
-        Trained neural network model used to generate predictions.
-    loader : torch.utils.data.DataLoader
-        DataLoader providing the input batches and their corresponding labels.
-
-    Returns
-    -------
-    preds : numpy.ndarray
-        Predicted probabilities for each sample, obtained by applying the
-        sigmoid function to the model logits.
-    labels : numpy.ndarray
-        Ground-truth labels corresponding to each sample.
-    """
-
-    model.eval()
-
-    preds = []  # model predictions
-    labels = []  # real labels
-
-    for *Xs, yb in loader:
-
-        logits = model(*Xs)
-        probabilities = torch.sigmoid(logits)
-
-        preds.append(probabilities)
-        labels.append(yb)
-
-    preds = torch.cat(preds).cpu().numpy().squeeze()
-    labels = torch.cat(labels).cpu().numpy().squeeze().astype(int)
-
-    return (preds, labels)
-
+from .analisis import permutation_importance
+from .utils import scale_split, make_loader, train_epoch, predict
 
 # =======================================================================================================
 # =======================================================================================================
 
 
 def nested_cv_fusion(
-    features_arrays, y, param_grid, outer_splits=5, inner_splits=3, epochs=60
+    features_arrays,
+    y,
+    param_grid,
+    outer_splits=5,
+    inner_splits=3,
+    epochs=60,
+    make_permutation_importance=False,  # Perform an analysis of how the variation in the values ​​of each feature influences the prediction of the model
 ):
     """
     Performs nested stratified cross-validation for a fusion neural network.
@@ -236,6 +55,11 @@ def nested_cv_fusion(
         scores, predictions, and labels for each epoch.
     """
 
+    print("INFO:")
+    print("      ->  A permutation importance analysis will be performed")
+
+    # -------------------------------------------------------------------------------------------------------------------
+
     keys, values = zip(*param_grid.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
@@ -250,8 +74,11 @@ def nested_cv_fusion(
     best_params_per_fold = []
     outer_histories = []
 
+    # It will be used in the case of a permutation importance analysis.
+    permutation_importances_per_fold = []
+
     print(
-        f"Evaluating {len(combinations)} combinations ({outer_splits * len(combinations) * inner_splits} internal training)"
+        f"      ->  Evaluating {len(combinations)} combinations ({outer_splits * len(combinations) * inner_splits} internal training)"
     )
 
     for outer_fold, (train_outer_idx, test_outer_idx) in enumerate(
@@ -398,6 +225,47 @@ def nested_cv_fusion(
             history["test_pred"].append(te_preds.copy())
             history["test_labels"].append(te_labels.copy())
 
+        # We want the permutation importance analysis to be performed
+        if make_permutation_importance:
+            _, importances = permutation_importance(
+                final_model,
+                scaled_outer_test,
+                y[test_outer_idx],
+                n_repeats=20,
+            )
+
+            permutation_importances_per_fold.append(importances)
+
+            # branch_names = ["FHR", "UC", "Clinical"]
+
+            # print(f"\nBaseline AUC: {baseline_auc:.4f}")
+
+            # for branch_name, branch_imp in zip(branch_names, importances):
+            #     print(f"\n{branch_name}")
+
+            #     for result in branch_imp:
+            #         print(
+            #             f"Feature {result['feature']:2d}: "
+            #             f"{result['mean']:.4f} "
+            #             f"+/- {result['std']:.4f}"
+            #         )
+
+        # Information on the weight that the outputs of each branch have in the final prediction of the model
+        # if final_model.use_branches:
+        #     # weights of the first layer of the classifier
+        #     W = final_model.classifier[0].weight.detach().cpu()
+        #     branch_size = 16
+
+        #     print("\nBranch weights:")
+        #     for i in range(len(feature_dims)):
+        #         start = i * branch_size
+        #         end = (i + 1) * branch_size
+
+        #         W_branch = W[:, start:end]
+        #         importance = W_branch.abs().mean().item()
+
+        #         print(f"Branch {i + 1}: {importance:.6f} -> {W_branch}")
+
         # save final results
         final_test_auc = history["test_auc"][-1]
 
@@ -418,4 +286,9 @@ def nested_cv_fusion(
     )
     print("=" * 70)
 
-    return (outer_auc_scores, best_params_per_fold, outer_histories)
+    return (
+        outer_auc_scores,
+        best_params_per_fold,
+        outer_histories,
+        permutation_importances_per_fold,
+    )
