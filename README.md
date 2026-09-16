@@ -1,38 +1,81 @@
-# Dahfi Automatic FIGO Rules**
+# DAHFI Automatic FIGO Rules
 
-This repository provides an automated implementation of the **FIGO (International Federation of Gynecology and Obstetrics) guidelines** for the classification of **cardiotocographic (CTG) tracings**. Its main purpose is to facilitate the **early detection of intrapartum fetal hypoxia** by applying advanced **signal analysis algorithms** to fetal heart rate (FHR) and uterine contraction data.
+This repository provides an automated, rule-based implementation of the
+**FIGO (International Federation of Gynecology and Obstetrics) criteria**
+for the analysis and classification of **cardiotocographic (CTG) recordings**.
 
-The project aims to support both research and clinical decision-making by standardizing how CTG recordings are interpreted according to international criteria. By automating the FIGO classification process, it helps reduce subjectivity and inter-observer variability in fetal monitoring assessments.
+The implemented methodology analyzes fetal heart rate (FHR) and uterine
+contraction (UC) signals to automatically evaluate the main CTG features
+considered in the FIGO-based classification:
 
-### **Data Source**
+- FHR baseline
+- FHR variability
+- Decelerations
+- Uterine contractions
+- Overall CTG classification
 
-The data used in the example notebook are obtained from a **publicly available database**, which can be freely accessed and downloaded from **[PhysioNet](https://www.physionet.org/content/ctu-uhb-ctgdb/1.0.0/)**.
-This dataset includes real intrapartum cardiotocographic recordings collected at the University Hospital in Brno (Czech Republic), making it a valuable resource for testing and validating algorithms related to fetal monitoring and signal processing.
+The main purpose of this repository is to provide a reproducible implementation
+of the methodology described in the associated research work and to facilitate
+the analysis of CTG recordings in fetal monitoring research.
 
-### **Example of Use**
+By applying the same computational criteria consistently across recordings,
+the automatic procedure may help reduce part of the variability associated
+with manual CTG interpretation.
 
-An example of how to use the provided code can be found in the notebook **`example_of_use.ipynb`**.
-This notebook demonstrates:
+> **Note:** This repository implements a computational, FIGO-oriented
+> interpretation of CTG criteria. Some clinical definitions require an explicit
+> algorithmic formulation before they can be applied automatically to digital
+> signals. These implementation details are described in the associated article.
 
-* How to load and preprocess CTG data from the PhysioNet database.
-* How to apply the implemented algorithms that follow FIGO guidelines.
-* How to interpret the resulting classifications and visual outputs.
 
-By following the steps in the example notebook, users can easily reproduce the analysis, adapt it to their own datasets, or integrate the methods into broader fetal monitoring research pipelines.
+## Data Source
 
-### **Environment Setup**
-To ensure full reproducibility and easy setup of the required dependencies, this project provides an environment configuration file named **`environment.yml`**.This file contains all the necessary libraries (both Conda and pip packages) and their specific versions used during development and testing.
+The data used in the example notebook are obtained from the publicly available
+**CTU-UHB Intrapartum Cardiotocography Database**, available through
+[PhysioNet](https://www.physionet.org/content/ctu-uhb-ctgdb/1.0.0/).
 
-1. **Create the Conda Environment** <br>
-First, make sure you have Anaconda or Miniconda installed on your system.Then, from the root directory of the repository, run:
+The database contains real intrapartum cardiotocographic recordings collected
+at the University Hospital in Brno, Czech Republic, together with associated
+clinical information.
+
+In this repository, the database is used to demonstrate the preprocessing,
+automatic CTG analysis, and evaluation workflow implemented in the project.
+
+
+## Example of Use
+
+An example of how to use the provided code is available in:
+
+`example_of_use.ipynb`
+
+The notebook demonstrates:
+
+- How to load CTG recordings.
+- How to visualize the original FHR and UC signals.
+- How to preprocess the CTG signals.
+- How to visualize the preprocessed recording.
+- How to apply the FIGO-based feature analysis to an individual CTG.
+- How to apply the same analysis to a complete collection of CTG recordings.
+
+The notebook is intended to provide a simple and reproducible example of the
+workflow implemented in this repository.
+
+
+## Environment Setup
+
+To facilitate reproducibility, the repository includes an environment
+configuration file:
+
+`environment.yml`
+
+This file contains the Conda and pip dependencies required to run the project.
+
+
+### 1. Create the Conda environment
+
+First, make sure that Anaconda or Miniconda is installed.
+
+From the root directory of the repository, run:
+
+```bash
 conda env create -f environment.yml
-This command will automatically create a new Conda environment with all the dependencies defined in the file.
-
-2. **Activate the Environment** <br>
-Once the environment is created, activate it with:
-conda activate dahfi_figo_env
-
-
-
-### AÑADIR DISCLAIMERS:
-- Se da por hecho, que las ctgs que se añadan a un df_ctg tienen la misma frecuencia que el resto de las ctgs ya añadidas. Esta frecuencia esta definida en el config file 
