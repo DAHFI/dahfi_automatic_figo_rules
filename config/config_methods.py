@@ -26,11 +26,6 @@ class PreprocessingConfig(BaseModel):
     fourier_num_bases: int
 
 
-class CorrelationConfig(BaseModel):
-    max_sec_displacement: int
-    not_nans_threshold_porc: float
-
-
 class GuidelinesRulesConfig(BaseModel):
     guidelines_rules: str
     center_window: bool
@@ -57,14 +52,10 @@ class GuidelinesRulesConfig(BaseModel):
     red_var_bandwith: int
 
 
-class FeaturesModelConfig(BaseModel):
-    morphological_features: list
-    linear_features: list
-    nolinear_features: list
-    IBTF_features: list
-    clinical_features: list
-    clinical_features_binary: list
-    clinical_features_numeric: list
+class RulesLabelsConfig(BaseModel):
+    normal: int
+    suspicious: int
+    pathological: int
 
 
 class AppConfig:
@@ -77,6 +68,5 @@ class AppConfig:
         self.limit = SignalLimitsConfig(**raw_dict)
         self.read = ReadDataConfig(**raw_dict)
         self.preprocessing = PreprocessingConfig(**raw_dict)
-        self.correlation = CorrelationConfig(**raw_dict)
         self.rules = GuidelinesRulesConfig(**raw_dict)
-        self.features = FeaturesModelConfig(**raw_dict)
+        self.labels = RulesLabelsConfig(**raw_dict)

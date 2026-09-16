@@ -1,41 +1,31 @@
+"""Rule-based CTG analysis following the FIGO-oriented implementation used in this project.
+
+The module contains signal preprocessing, baseline estimation, deceleration and
+variability analysis, uterine-contraction detection, tachysystole assessment,
+and the final rule-based CTG classification.
+
+FHR and UC signals are stored as NumPy arrays. Pandas is used locally for
+rolling-window operations where appropriate.
+"""
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import sys
 import commentjson
 from scipy.ndimage import label
 from matplotlib import pyplot as plt
-from matplotlib.gridspec import GridSpec
 from typing import Union, Dict
 
-from config_methods import AppConfig
-
-import skfda
-import numpy as np
-import matplotlib.pyplot as plt
-from skfda.representation.basis import Fourier
-from skfda.representation.basis import BSpline
-
-from skfda import FDataGrid
-from skfda.preprocessing.missing import MissingValuesInterpolation
-
+from config.config_methods import AppConfig
 
 from typing import TYPE_CHECKING
 
-# solo se lee para el autocompletado
 if TYPE_CHECKING:
     from models.df_ctg import DF_CTG
 
-# TODO: Para los plots podría poner los times en minutos (queda más claro)
-
 
 class CTG:
-
-    # # Label constants for classification
-    # NORMAL = 0
-    # SUSPICIOUS = 1
-    # PATHOLOGICAL = 2
 
     def __init__(
         self,
@@ -46,12 +36,6 @@ class CTG:
         ph: float = None,  # Optional pH value
         id: int = None,  # Optional ID for the record or patient
         group: DF_CTG = None,
-        # Thresholds and constants
-        # MAX_TIME_FHR=250,  # Maximum plausible FHR value
-        # MIN_TIME_FHR=0,  # Minimum plausible FHR value
-        # MAX_TIME_UC=150,  # Maximum plausible UC value
-        # MIN_TIME_UC=0,  # Minimum plausible UC value
-        # NOT_NAN_PERC=0.5,  # Minimum percentage of non-NaN values required in a window
     ):
 
         self.group = group
@@ -89,60 +73,12 @@ class CTG:
         self.ph = ph
         self.frequency = freq
 
-        # Store physiological limits for plausibility checks
-        # self.MAX_TIME_FHR = MAX_TIME_FHR
-        # self.MIN_TIME_FHR = MIN_TIME_FHR
-        # self.MAX_TIME_UC = MAX_TIME_UC
-        # self.MIN_TIME_UC = MIN_TIME_UC
-
-        # Threshold for minimum non-NaN data required in rolling computations
-        # self.NOT_NAN_PERC = NOT_NAN_PERC
-
-        # Placeholders for preprocessing results (e.g., baseline, decelerations, etc.)
-        # self._preprocess_type
-        # self._baseline
-        # self._baseline_labels
-        # self._decelerations_labels
-        # self._variability_labels
-        # self._conclusion_labels
-
-        # self.type_smoothe
-        # self.fd_suave
-        # self.n_basis
-
-        # self.corr_fhr_uc
-        # self.corr_fhr_prima_uc
-
-        ## ---- ATRIBUTOS DE PROGRESO ----
-        # self.is_prep : bool
-
-    ## ---------------------------------------------
-    ## --------------- GET FEATURES ---------------
-
-    def get_features(self):
-        """
-        Extract features from the CTG data.
-        """
-
-        if self.group is None and not print(hasattr(self, "is_prep")):
-            print(
-                "WARNING! Features are being extracted from the unprocessed signals..."
-            )
-
-        return 0
-    
-    def get_fhr_prima(self):
-        return np.diff(self.fhr)
-
-
-    ## ---------------------------------------------
-    ## --------------- PREPROCESSING ---------------
+    # -------------------------------------------------------------------------
+    # PREPROCESSING
+    # -------------------------------------------------------------------------
 
     def preprocess_signal(self, prep_type=None):
-        # si devuelve 1 --> Error
-        # si devuelve 0 --> Ok
 
-        ## Leemos la configuración ##
         freq = self.config.freq
 
         if prep_type == None:
@@ -156,7 +92,6 @@ class CTG:
         min_value_uc = self.config.limit.min_value_uc
         max_value_uc = self.config.limit.max_value_uc
 
-        # Comprobar si es nan completamente -> saltamos
         if np.isnan(self.fhr).all() or np.isnan(self.uc).all():
             print(
                 f"{self.id}: FHR or UC signals are empty, preprocessing cannot be applied."
@@ -164,19 +99,15 @@ class CTG:
 
             return 1
 
-        # Hacemos copia de las señales
         fhr_aux = self.fhr.copy()
         uc_aux = self.uc.copy()
 
-        # Ponemos los valores que no sean factibles a nan
         fhr_aux[(fhr_aux <= min_value_fhr) | (fhr_aux > max_value_fhr)] = np.nan
         uc_aux[(uc_aux < min_value_uc) | (uc_aux > max_value_uc)] = np.nan
 
-        # (opcional) Quitamos los nan del final
         if rm_tail_nan:
             fhr_aux, uc_aux = self._drop_tail_nans(fhr_aux, uc_aux)
 
-        # Cortamos la señal
         num_cut_data = freq * cut_time * 60
 
         fhr_aux = fhr_aux[-num_cut_data:]
@@ -184,7 +115,6 @@ class CTG:
 
         self._time = np.arange(0, (len(fhr_aux) / freq), (1 / freq))
 
-        # Parte específica de cada preprocesado
         match prep_type:
             case "FIGO":
                 self._preprocess_type = "FIGO"
@@ -192,19 +122,6 @@ class CTG:
                 fhr_aux = self._replace_gaps(fhr_aux)
                 uc_aux = self._replace_gaps(uc_aux)
 
-            case "FB_FOURIER":
-                self._preprocess_type = "FB_FOURIER"
-
-                fhr_aux = self._fourier_prep(fhr_aux)
-                uc_aux = self._fourier_prep(uc_aux)
-
-            case "SPLINES":
-                self._preprocess_type = "SPLINES"
-
-                fhr_aux = self._splines_prep(fhr_aux)
-                uc_aux = self._splines_prep(uc_aux)
-
-        # Guardamos los resultados
         self._time = np.arange(0, len(fhr_aux) / freq, 1 / freq)
 
         self.fhr = fhr_aux
@@ -212,466 +129,9 @@ class CTG:
 
         return 0
 
-    def _splines_prep(self, signal):
-        n_basis = self.config.preprocessing.fourier_num_bases
-        threshold = (self.config.preprocessing.max_sec_gaps * self.config.freq) + 1
-
-        nan_mask = np.isnan(signal)
-
-        fd = FDataGrid(data_matrix=[signal])
-        interpolator = MissingValuesInterpolation()
-        fd_interpolated = interpolator.fit_transform(fd)
-        signal = fd_interpolated.data_matrix[0, :, 0]
-
-        fd_basis_spline = fd_interpolated.to_basis(BSpline(n_basis=n_basis)).to_grid(
-            grid_points=fd.grid_points
-        )
-
-        signals = fd_basis_spline.data_matrix[0, :, 0]
-
-        labeled_gaps, _ = label(nan_mask)
-        gap_sizes = np.bincount(labeled_gaps)
-        big_gaps = np.where(gap_sizes > threshold)[0]
-        big_gaps = big_gaps[big_gaps != 0]
-        big_gaps_mask = np.isin(labeled_gaps, big_gaps)
-
-        return np.where(big_gaps_mask, np.nan, signals).flatten()
-
-    def _fourier_prep(self, signal):
-        n_basis = self.config.preprocessing.fourier_num_bases
-        threshold = (self.config.preprocessing.max_sec_gaps * self.config.freq) + 1
-
-        # Tratamos los nan -> interpolamos todos los nans guardando las posiciones donde están
-        nan_mask = np.isnan(signal)  # Guardamos las posiciones de los NaNs
-
-        fd = FDataGrid(data_matrix=[signal])
-        interpolator = MissingValuesInterpolation()
-        fd_interpolated = interpolator.fit_transform(fd)
-        signal = fd_interpolated.data_matrix[0, :, 0]
-
-        # Suavizamos
-        fd_basis_fourier = fd_interpolated.to_basis(Fourier(n_basis=n_basis)).to_grid(
-            grid_points=fd.grid_points
-        )
-        signals = fd_basis_fourier.data_matrix[0, :, 0]
-
-        # La fila anterior creo que se puede cambiar por -> signals = fd_basis_fourier.data_matrix[0, :, 0]
-
-        # Recuperamos los nan mayores del threshold
-        labeled_gaps, _ = label(nan_mask)
-        gap_sizes = np.bincount(labeled_gaps)
-        big_gaps = np.where(gap_sizes > threshold)[0]
-        big_gaps = big_gaps[big_gaps != 0]
-        big_gaps_mask = np.isin(labeled_gaps, big_gaps)
-
-        return np.where(big_gaps_mask, np.nan, signals).flatten()
-
-    ## ---------------------------------------------
-    ## -------------- CORR FUNCTION ----------------
-
-    def _crosscorr(self, x, y, lag=0):
-
-        # not_nans_threshold = len(x) * self.config.correlation.not_nans_threshold_porc
-        not_nans_threshold = len(x) * 0.3
-
-        y_shift = self.shift_numpy(y, lag=lag)
-
-        indices_validos = ~np.isnan(x) & ~np.isnan(y_shift)
-
-        # Comprobando que al menos hay tantos datos distintos de nan como el límite (normalmente 30% min)
-        # Si más del 70% de los datos son nan, ponemos el valor de la corerlación a nan
-        # if indices_validos.sum() < not_nans_threshold:
-        #     print(
-        #         f"WARNING (ctg id: {self.id}): Más del {(1 - 0.3)*100}% de la señal es NaN."
-        #     )
-        # return np.nan
-
-        return np.corrcoef(x[indices_validos], y_shift[indices_validos])[0][1]
-
-    @staticmethod
-    def _get_max_corr_lag(corr_signal, lags):
-        # Obtenemos el índice del mayor valor en valor absoluto
-        abs = np.abs(corr_signal)
-        max_abs = np.nanargmax(abs)
-
-        # Nos quedamos con el indice que este más cercano al 0, por ambos lados
-        index_max_abs = np.where(np.isclose(abs, abs[max_abs]))[0]
-        lags_index_max_abs = lags[index_max_abs]
-        index_closer_0 = np.argmin(np.abs(lags_index_max_abs))
-        res_index = index_max_abs[index_closer_0]
-
-        # lag con el que se alcanza el valor max en abs, y el valor máximo en abs (se devuelve con signo)
-        return lags[res_index], corr_signal[res_index]
-
-    @staticmethod
-    def _get_min_corr_lag(corr_signal, lags):
-        min = np.nanargmin(corr_signal)
-
-        # Nos quedamos con el indice que este más cercano al 0, por ambos lados
-        index_min = np.where(np.isclose(corr_signal, corr_signal[min]))[0]
-        lags_index_min = lags[index_min]
-        index_closer_0 = np.argmin(np.abs(lags_index_min))
-        res_index = index_min[index_closer_0]
-
-        # lag con el que se alcanza el valor max en abs, y el valor máximo en abs (se devuelve con signo)
-        return lags[res_index], corr_signal[res_index]
-
-    @staticmethod
-    def plot_corr_graph(
-        fhr,
-        uc,
-        tiempo,
-        lags,
-        corr_fhr_curva,
-        max_abs_corr_fhr_uc,
-        lag_max_abs_corr_fhr_uc,
-        corr_fhr_prima_curva,
-        max_abs_corr_fhr_prima_uc,
-        lag_max_abs_corr_fhr_prima_uc,
-    ):
-        ## 1 Gráfica correlaciones + desplazamiento para la FHR
-        plt.figure(figsize=(10, 5))
-        eje_x_lags = lags / (4 * 60)
-        plt.plot(eje_x_lags, corr_fhr_curva)
-        # plt.title("Curva de Correlación Cruzada (UC vs FHR)")
-        plt.xlabel("Displacement (min)", fontsize=18)
-        plt.ylabel("Correlation", fontsize=18)
-        plt.grid(True)
-        plt.savefig("corr_curve.pdf", format="pdf", bbox_inches="tight")
-        plt.show()
-
-        print(f"La correlación máxima (abs) es: {max_abs_corr_fhr_uc:.2f}")
-        print(
-            f"Ocurre con un desplazamiento de: {lag_max_abs_corr_fhr_uc:.2f} puntos -> {lag_max_abs_corr_fhr_uc/(4*60):.2f} minutos"
-        )
-
-        ## 2 Gráfica correlaciones + desplazamiento para la FHR'
-        plt.figure(figsize=(10, 5))
-        eje_x_lags = lags / (4 * 60)
-        plt.plot(eje_x_lags, corr_fhr_prima_curva)
-        # plt.title("Curva de Correlación Cruzada (UC vs FHR')")
-        plt.xlabel("Displacement (min)")
-        plt.ylabel("Correlation")
-        plt.grid(True)
-        plt.show()
-
-        print(f"La correlación máxima (abs) es: {max_abs_corr_fhr_prima_uc:.2f}")
-        print(
-            f"Ocurre con un desplazamiento de: {lag_max_abs_corr_fhr_prima_uc:.2f} puntos -> {lag_max_abs_corr_fhr_prima_uc/(4*60):.2f} minutos"
-        )
-
-        ## 3 Gráfica de FHR y UC, con una desplazada sobre la otra
-        tiempo_desplazado = tiempo - lag_max_abs_corr_fhr_uc
-
-        plt.figure(figsize=(20, 6))
-        plt.plot(tiempo, uc, label="UC (Original)", color="blue", alpha=0.7)
-        plt.plot(
-            tiempo_desplazado,
-            fhr,
-            label=f"FHR desplazada (Lag {lag_max_abs_corr_fhr_uc})",
-            color="black",
-            alpha=0.7,
-        )
-        plt.title("Sincronización de UC y FHR")
-        plt.xlabel("Tiempo (puntos)")
-        plt.ylabel("Señales")
-        plt.legend()
-        plt.grid(True)
-        # plt.savefig("corr_curve.pdf", format="pdf", bbox_inches="tight")
-        plt.show()
-
-    def get_corr_fun(
-        self,
-        ax1=None,
-        ax2=None,
-        contador_error=0,
-        one_ctg_analisis=True,
-        plot_graph=True,
-    ):
-        fhr = self.fhr
-        uc = self.uc
-        tiempo = np.arange(len(uc))  # Para los gráficos
-        max_lags = self.config.correlation.max_sec_displacement * 4
-
-        fhr_prima = np.diff(fhr)
-        uc_prima = uc[1:]
-
-        # Evitamos dividir entre 0
-        if np.std(uc_prima) == 0 or np.std(fhr_prima) == 0:
-            if one_ctg_analisis:
-                print(
-                    "Señal plana o inválida.",
-                )
-            return -1
-
-        # Normalizamos la señal FHR y UC
-        uc_norm = (uc - np.nanmean(uc)) / np.nanstd(uc)
-        fhr_norm = (fhr - np.nanmean(fhr)) / np.nanstd(fhr)
-
-        uc_prima_norm = (uc_prima - np.nanmean(uc_prima)) / np.nanstd(uc_prima)
-        fhr_prima_norm = (fhr_prima - np.nanmean(fhr_prima)) / np.nanstd(fhr_prima)
-
-        # Array de lags -> array([-max_lags, ..., -1, 0, 1, 2, ....., max_lags])
-        lags = np.arange(-max_lags, max_lags + 1)
-
-        # Calculamos la curva de correlaciones
-        corr_fhr_curva = np.array(
-            [self._crosscorr(uc_norm, fhr_norm, lag) for lag in lags]
-        )
-
-        corr_fhr_prima_curva = np.array(
-            [self._crosscorr(uc_prima_norm, fhr_prima_norm, lag) for lag in lags]
-        )
-
-        # Sacamos el menor número y el indice al que corresponde
-        # lag_max_abs_corr_fhr_uc, max_abs_corr_fhr_uc = self._get_max_corr_lag(
-        #     corr_fhr_curva, lags
-        # )
-        # lag_max_abs_corr_fhr_prima_uc, max_abs_corr_fhr_prima_uc = (
-        #     self._get_max_corr_lag(corr_fhr_prima_curva, lags)
-        # )
-
-        lag_min_corr_fhr_uc, min_corr_fhr_uc = CTG._get_min_corr_lag(
-            corr_fhr_curva, lags
-        )
-        lag_min_corr_fhr_prima_uc, min_corr_fhr_prima_uc = CTG._get_min_corr_lag(
-            corr_fhr_prima_curva, lags
-        )
-
-        # Sacamos gráficas
-        if one_ctg_analisis:
-            self.plot_corr_graph(
-                fhr,
-                uc,
-                tiempo,
-                lags,
-                corr_fhr_curva,
-                min_corr_fhr_uc,
-                lag_min_corr_fhr_uc,
-                corr_fhr_prima_curva,
-                min_corr_fhr_prima_uc,
-                lag_min_corr_fhr_prima_uc,
-            )
-
-        if not one_ctg_analisis:
-            # Pintamos en el gráfico de arriba (FHR original)
-
-            if self.ph < self.config.ph_limit:
-                color = "red"
-            else:
-                color = "green"
-
-            ax1.scatter(
-                lag_min_corr_fhr_uc / 4,
-                min_corr_fhr_uc,
-                c=color,
-                s=10,
-                alpha=0.5,
-            )
-
-            # Pintamos en el gráfico de abajo (Derivada FHR')
-            ax2.scatter(
-                lag_min_corr_fhr_prima_uc / 4,
-                min_corr_fhr_prima_uc,
-                c=color,
-                s=10,
-                alpha=0.5,
-            )
-
-        # Guardamos
-        self.lags_corr = lag_min_corr_fhr_uc  # BORRAR
-        self.corr_fhr_uc = corr_fhr_curva
-        self.corr_fhr_prima_uc = corr_fhr_prima_curva
-
-        return min_corr_fhr_uc, lag_min_corr_fhr_uc
-
-    ## ---------------------------------------------
-    ## ------------------ SMOOTHE ------------------
-
-    def smoothe(
-        self,
-        type_smoothe: str = "Fourier",
-        n_basis=25,
-        plot_smooth_graph=False,
-        plot_fase_graph=False,
-        get_enery_info=False,  # Esto habrá que cambiarlo,
-        get_mechanic_energy=False,
-        get_area_fase=False,
-        get_len_curva=False,
-        create_figure=True,
-    ):
-
-        # Guardamos el tipo de smoothe realizado
-        self.type_smoothe = type_smoothe
-        self.n_basis = n_basis
-
-        # Comprobamos si tiene NaN (no se puede aplicar estos métodos con huecos en la señal)
-        if self.fhr.isna().any():
-
-            # Calcular el porcentaje de nan
-            porcentaje_nan = (self.fhr.isnull().sum() / len(self.fhr)) * 100
-            if porcentaje_nan > 20:
-                print(
-                    f"FIN ANÁLISIS: El {porcentaje_nan:.2f}% del tiempo la señal original toma valor NaN."
-                )
-                return -1
-
-            fhr_aux = self.fhr.interpolate(method="linear").ffill().bfill()
-
-            y_values = fhr_aux.values.reshape(1, -1)
-            tiempos = fhr_aux.index.values
-
-        else:
-            y_values = self.fhr.values.reshape(1, -1)
-            tiempos = self.fhr.index.values
-
-        if type_smoothe == "Fourier":
-            fd = skfda.FDataGrid(grid_points=tiempos, data_matrix=y_values)
-
-            duracion_total = (tiempos[0], tiempos[-1])
-            basis = FourierBasis(domain_range=duracion_total, n_basis=n_basis)
-            fd_suave = fd.to_basis(basis)
-
-            self.fd_suave = fd_suave
-
-            # Mostramos un gráfico con la función suavizada contra la señal original
-            if plot_smooth_graph:
-                plt.figure(figsize=(12, 4))
-                plt.plot(
-                    self._time,
-                    y_values.flatten(),
-                    color="lightgrey",
-                    label="FHR Original",
-                )
-
-                fhr_reconstruida = fd_suave(tiempos).flatten()
-                plt.plot(
-                    self._time,
-                    fhr_reconstruida,
-                    color="teal",
-                    lw=2,
-                    label=f"Fourier Smoothe Curve (n_basis={n_basis})",
-                )
-                plt.title("Raw Data vs. Fourier Smoothing")
-                plt.xlabel("Time")
-                plt.ylabel("FHR (bpm)")
-                plt.legend()
-                plt.grid(True, alpha=0.3)
-                # plt.show()
-                plt.savefig("suavizado_fourier.pdf", format="pdf", bbox_inches="tight")
-
-            # Continuamos el análisis
-            if (
-                plot_fase_graph
-                or get_enery_info
-                or get_mechanic_energy
-                or get_area_fase
-                or get_len_curva
-            ):
-                # Calculamos la derivada
-                fd_derivada_1 = fd_suave.derivative(order=1)
-
-                # Evaluamos en 1000 puntos distribuidos en el tiempo real del registro
-                puntos_eval = np.linspace(tiempos[0], tiempos[-1], 1000)
-                y_suave = fd_suave(puntos_eval).flatten()
-                y_prima = fd_derivada_1(puntos_eval).flatten()
-
-            else:
-                return
-
-            if plot_fase_graph:
-
-                # Pintar el gráfico f' vs f''
-                if create_figure:
-                    plt.figure(figsize=(10, 5))
-
-                if self.ph > 7.20:
-                    color = "teal"
-                else:
-                    color = "sandybrown"
-
-                plt.plot(
-                    y_suave,
-                    y_prima,
-                    color=color,
-                    lw=1.5,
-                    alpha=0.6,
-                    label="Trayectoria FHR",
-                )
-
-                if create_figure:
-                    # plt.title("FHR Phase Analysis: Velocity vs. Acceleration")
-                    plt.xlabel("FHR Velocity (bpm/s))", fontsize=18)
-                    plt.ylabel("FHR Acceleration (bpm/s²)", fontsize=18)
-                    plt.axhline(0, color="black", lw=1)
-                    plt.axvline(0, color="black", lw=1)
-                    plt.grid(True, alpha=0.3)
-                    # plt.show()
-                    plt.savefig("Phase Analysis.pdf", format="pdf", bbox_inches="tight")
-                    print(
-                        f"Número de puntos críticos de la FHR -> {len(np.where(np.diff(np.sign(y_prima)) != 0)[0])}"
-                    )
-
-            if get_enery_info:
-                # Asumiendo masa m = 1 para simplificar la analogía física
-
-                # Energía Cinética: 0.5 * v^2
-                energia_cinetica = 0.5 * (y_suave**2)
-
-                # Energía Potencial: 0.5 * a^2
-                energia_potencial = 0.5 * (y_prima**2)
-
-                # Energía Total (Mecánica) Em = Ec + Ep
-                energia_total = energia_cinetica + energia_potencial
-
-                # Energía Cinética
-                max_ec = np.max(energia_cinetica)
-                min_ec = np.min(energia_cinetica)
-
-                # Energía Potencial
-                max_ep = np.max(energia_potencial)
-                min_ep = np.min(energia_potencial)
-
-                # Energía Total
-                max_en = np.max(energia_total)
-                min_en = np.max(energia_total)
-
-                print(f"Kinetic Energy (Ec) -> Max: {max_ec:e}, Min: {min_ec:e}")
-                print(f"Potential Energy (Ep) -> Max: {max_ep:e}, Min: {min_ep:e}")
-                print(f"Total Energy (Em) -> Max: {max_en:e}, Min: {min_en:e}")
-
-            if get_area_fase:
-                # Se calcula el vector escalar entre el punto actual y el siguiente, lo que me
-                # da el area entre los vectores (paralelogramo), al dividirlo entre 2 tengo el area del triángulo
-
-                # si el angulo entre los vectores es mayor que 90 y menor que 270 será negativo
-
-                area = 0.5 * np.abs(
-                    np.dot(y_suave[:-1], y_prima[1:])
-                    - np.dot(y_suave[1:], y_prima[:-1])
-                )
-                print(f"Area de la curva -> {area:e}")
-
-            if get_len_curva:
-                dx = np.diff(y_suave)
-                dy = np.diff(y_prima)
-                distancias = np.sqrt(dx**2 + dy**2)
-
-                # en el caso de que la señal original tenga nan vamos a quitar
-
-                print(f"Longitud de la curva -> {np.sum(distancias):e}")
-
-            if get_mechanic_energy:
-
-                if not get_enery_info:
-                    energia_cinetica = 0.5 * (y_suave**2)
-                    energia_potencial = 0.5 * (y_prima**2)
-                    energia_total = energia_cinetica + energia_potencial
-
-                return np.max(energia_total)
-
-    ## ---------------------------------------------
-    ## ------------------ GENERAL ------------------
+    # -------------------------------------------------------------------------
+    # PUBLIC RULE-BASED ANALYSIS API
+    # -------------------------------------------------------------------------
 
     def apply_rules(
         self,
@@ -729,7 +189,7 @@ class CTG:
             rm_tail_nan (bool): Whether to remove trailing NaNs before cutting the signal.
 
             # Baseline parameters
-            window_time_baseline (int): Time window to estimate the baseline (in seconds).
+            window_time_baseline (int): Baseline estimation window, in minutes.
             baseline_graph (bool): Whether to generate a graph for the baseline.
 
             # Deceleration parameters
@@ -759,16 +219,12 @@ class CTG:
             ValueError: If `rules_type` is not supported.
         """
 
-        # Supported ruleset(s)
+        # Validate the requested rule set.
         correct_rules_type = ["FIGO"]
         if rules_type not in correct_rules_type:
             raise ValueError("ERROR: It is not a valid preprocessing")
 
-        # TODO: Hacer algo con este mensaje
-        # if hasattr(self, "_preprocess_type"):
-        #     print("Appling FIGO rules on pre-processing: ", self._preprocess_type)
-
-        # Apply FIGO ruleset if specified
+        # Dispatch to the FIGO rule-based analysis.
         if rules_type == "FIGO":
             return self.apply_rules_FIGO(
                 center=center,
@@ -807,165 +263,9 @@ class CTG:
                 conclusion_graph=conclusion_graph,
             )
 
-    ## -----------------------------------------------
-    ## --------------- TEST FUNCTIONS ----------------
-
-    def _get_baseline_graph(self):
-        """
-        Plot the Fetal Heart Rate (FHR) signal along with its computed baseline.
-
-        This method generates a matplotlib figure displaying the FHR signal, the
-        baseline, and color-coded zones indicating normal, suspicious, and pathological
-        ranges based on FHR values.
-
-        If the FHR signal is entirely NaN, a warning message is printed and the
-        method exits without plotting.
-
-        Returns:
-            None
-        """
-
-        t = self._time / 60
-        FHR = self.fhr
-
-        # Check if the entire FHR signal is NaN
-        if FHR.isna().all():
-            print("The FHR signal is NaN.")
-            return
-
-        baseline = self._baseline
-
-        # Create a figure for the plot
-        plt.figure(figsize=(18, 6))
-
-        # Plot FHR and baseline
-        # plt.plot(t, FHR, color="black", label="FHR")
-        plt.plot(t, self.fhr, linewidth=1.5, color="black")
-        plt.plot(t, baseline, linewidth=2, color="#2849C1", label="Baseline")
-
-        # Fill background regions based on clinical interpretation
-        plt.fill_between(t, 110, 160, color="#388E3C", alpha=0.4, label="N")
-        plt.fill_between(t, 100, 110, color="#F58220", alpha=0.4)
-        plt.fill_between(t, 160, 250, color="#F58220", alpha=0.4, label="S")
-        plt.fill_between(t, 0, 100, color="#E04A3F", alpha=0.4, label="P")
-
-        # Configure axis labels and limits
-        plt.xlabel("Time (min)", fontsize=25)
-        plt.ylabel("FHR (bpm)", fontsize=25)
-        # plt.ylim(np.nanmin(FHR) - 5, np.nanmax(FHR) + 5)
-        plt.ylim(50, 200)
-
-        plt.xticks(np.linspace(0, 30, 5))
-        plt.tick_params(axis="both", labelsize=25)
-
-        # Add title, legend, and grid
-        # plt.title("FHR and Baseline")
-        # plt.legend(loc="upper left", fontsize=20)
-        # plt.grid(True)
-
-        # Display the plot
-        plt.savefig("baseline_graph_extra.pdf", format="pdf", bbox_inches="tight")
-        plt.show()
-
-    def _get_variability_graph(self, center: bool = False):
-        # TODO: AQUÍ HAY QUE AÑADIR MÁS PARAMETROS !
-
-        """
-        Plot the fetal heart rate (FHR) signal and highlight variability classifications.
-
-        This method visualizes variability using:
-            - Black line: FHR signal
-            - Red dashed line: 1-minute rolling maximum
-            - Blue dashed line: 1-minute rolling minimum
-            - Green line: 1-minute variability bandwidth (max - min)
-            - Green shaded area: Normal variability (label 0)
-            - Red shaded area: Pathological variability (label 2)
-
-        Args:
-            center (bool): Whether to center the rolling window during computation.
-
-        Returns:
-            None
-        """
-
-        FHR = self.fhr
-        window_size = int(self.frequency * 60)
-        min_periods = int(self.NOT_NAN_PERC * window_size)
-
-        time = self._time / 60
-
-        # Rolling max and min values over 1-minute windows
-        rolling_fhr = FHR.rolling(
-            window=window_size, min_periods=min_periods, center=center
-        )
-        max_fhr = rolling_fhr.max()
-        min_fhr = rolling_fhr.min()
-
-        # Variability is defined as the difference between max and min
-        variability_bandwidth = max_fhr - min_fhr
-
-        # Create figure
-        plt.figure(figsize=(18, 6))
-
-        # Plot the FHR signal
-        plt.plot(time, FHR, label="FHR", color="black", alpha=0.6)
-
-        # Plot 1-minute max and min FHR
-        plt.plot(
-            time,
-            max_fhr,
-            label="Max FHR (1 min)",
-            color="#E04A3F",
-            linestyle="--",
-            alpha=1,
-        )
-        plt.plot(
-            time,
-            min_fhr,
-            label="Min FHR (1 min)",
-            color="#2849C1",
-            linestyle="--",
-            alpha=1,
-        )
-
-        # Plot the variability bandwidth
-        plt.plot(
-            time,
-            variability_bandwidth,
-            label="FHR Variability (1 min)",
-            color="#388E3C",
-        )
-
-        # Fill background for normal and pathological variability
-        max_fill = np.nanmax(FHR) + 5
-        plt.fill_between(
-            time,
-            0,
-            max_fill,
-            where=(self._variability_labels == 0),
-            color="#388E3C",
-            alpha=0.4,
-        )
-        plt.fill_between(
-            time,
-            -1,
-            max_fill,
-            where=(self._variability_labels == 2),
-            color="red",
-            alpha=0.5,
-        )
-
-        plt.tick_params(axis="both", labelsize=25)
-
-        # Axis labels, title, legend, and layout
-        plt.xlabel("Time (min)", fontsize=25)
-        plt.ylabel("FHR (bpm)", fontsize=25)
-        # plt.title("FHR Variability (1-min bandwidth)", fontsize=20)
-        plt.legend(loc="upper right")
-        # plt.grid(True)
-        plt.tight_layout()
-        plt.savefig("variability_graph_extra.pdf", format="pdf", bbox_inches="tight")
-        plt.show()
+    # -------------------------------------------------------------------------
+    # VISUALIZATION
+    # -------------------------------------------------------------------------
 
     def get_contractions_graph(
         self,
@@ -990,7 +290,6 @@ class CTG:
         plt.figure(figsize=(18, 6))
         plt.plot(t, UC, label="UC", color="black")
 
-        # is_contraction = is_contraction.fillna(False)
         is_contraction = np.where(
             (is_contraction == "NaN") | (is_contraction == "None"),
             False,
@@ -999,42 +298,25 @@ class CTG:
         in_condition = False
         start = None
 
-        # for i in range(len(is_contraction)):
-        #     if (
-        #         is_contraction.iloc[i] and not in_condition
-        #     ):  # Comienza una serie de True
-        #         in_condition = True
-        #         start = t[i]
-        #     elif (
-        #         not is_contraction.iloc[i] and in_condition
-        #     ):  # Termina una serie de True
-        #         in_condition = False
-        #         end = t[i]
-        #         plt.axvspan(start, end, color="blue", alpha=0.5)
-
         for i in range(len(is_contraction)):
-            if is_contraction[i] and not in_condition:  # Comienza una serie de True
+            if is_contraction[i] and not in_condition:
                 in_condition = True
                 start = t[i]
-            elif not is_contraction[i] and in_condition:  # Termina una serie de True
+            elif not is_contraction[i] and in_condition:
                 in_condition = False
                 end = t[i]
-                # Aprovecho para sugerirte cambiar el color al "Azul acoplado" que elegimos antes ;)
                 plt.axvspan(start, end, color="#2849C1", alpha=0.4)
 
-        # Caso especial: si termina en True, cerramos al final
         if in_condition:
-            plt.axvspan(start, t.iloc[-1], color="blue", alpha=0.5)
+            plt.axvspan(start, np.asarray(t)[-1], color="blue", alpha=0.5)
 
         plt.tick_params(axis="both", labelsize=20)
 
-        # plt.title("Contractions in UC")
         plt.xlabel("Time (min)", fontsize=20)
         plt.ylabel("Pressure (mmHg)", fontsize=20)
         plt.grid(False)
         plt.tight_layout()
 
-        # TODO 1: Borrar
         plt.savefig("contractions_graph.pdf", format="pdf", bbox_inches="tight")
 
         plt.show()
@@ -1057,8 +339,6 @@ class CTG:
         Returns:
             None: Displays a matplotlib figure with 4 subplots (FHR and UC for two halves).
         """
-
-        # TODO: Añadir la opción de desplazamiento
 
         pd_fhr = pd.DataFrame(self.fhr, self._time)
         pd_uc = pd.DataFrame(self.uc, self._time)
@@ -1119,7 +399,6 @@ class CTG:
 
     def plot_fhr(self, title_eje_x=False, save_name=None):
 
-        ## DESCOMENTAR PARA FIGURAS ARTÍCULO
         plt.figure(figsize=(24, 6))
         plt.plot(
             self._time / 60,
@@ -1141,37 +420,9 @@ class CTG:
 
         plt.savefig(save_name, format="pdf", bbox_inches="tight")
 
-        # # Split signal length in half
-        # mid = len(self.fhr) // 2
-
-        # # Divide the FHR signal into first and second halves
-        # fhr1, fhr2 = self.fhr.iloc[:mid], self.fhr.iloc[mid:]
-
-        # # Create 2 vertically stacked subplots (FHR for both halves)
-        # _, axs = plt.subplots(2, 1, figsize=(24, 7), sharex=False)
-
-        # # Plot FHR (first half)
-        # ax1 = axs[0]
-        # ax1.plot(fhr1.index / 60, fhr1.values, color="black", label="FHR")
-        # ax1.set_ylabel("FHR", fontsize=14)
-        # ax1.tick_params(axis="both", labelsize=13)
-
-        # # Plot FHR (second half)
-        # ax2 = axs[1]
-        # ax2.plot(fhr2.index / 60, fhr2.values, color="black", label="FHR")
-        # ax2.set_xlabel("Time (min)", fontsize=14)
-        # ax2.set_ylabel("FHR", fontsize=14)
-        # ax2.tick_params(axis="both", labelsize=13)
-
-        # # Adjust layout to leave space for the main title
-        # plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-        # plt.savefig(save_name, format="pdf", bbox_inches="tight")
-
-        # plt.show()
-
-    ## ----------------------------------------------------
-    ## --------------- RULES FIGO METODS ------------------
+    # -------------------------------------------------------------------------
+    # FIGO-BASED RULES
+    # -------------------------------------------------------------------------
 
     def apply_rules_FIGO(
         self,
@@ -1211,7 +462,7 @@ class CTG:
         conclusion_graph: bool = True,
     ) -> Union[pd.Series, Dict[str, pd.Series]]:
         """
-        Applies the FIGO guidelines for fetal heart rate analysis, integrating baseline,
+        Apply the project's FIGO-based CTG interpretation rules, integrating baseline,
         decelerations, and variability into a final classification.
 
         Args:
@@ -1250,10 +501,10 @@ class CTG:
             dict (optional): Dictionary with intermediate results if `get_dicc` is True.
         """
 
-        # Optionally apply preprocessing before analysis
+        # Optionally preprocess FHR and UC before applying the rules.
         if preprocess:
 
-            # Warn if the signal has already been preprocessed
+            # Report previous preprocessing to avoid applying it unintentionally twice.
             if hasattr(self, "_preprocess_type"):
                 print(
                     "The ctg has been previously preprocessed following: ",
@@ -1266,7 +517,7 @@ class CTG:
                 rm_tail_nan=rm_tail_nan,
             )
 
-        # Compute individual FIGO criteria
+        # Evaluate the three CTG components used in the final classification.
         base_labels = self._get_baseline_labels(
             window_min_size=window_time_baseline, graph=baseline_graph, center=center
         )
@@ -1304,15 +555,17 @@ class CTG:
             red_var_bandwith=red_var_bandwith,
         )
 
-        # Combine criteria into overall classification
+        # Combine component labels into the final CTG classification.
         conclusion_labels = self._get_conclusion_labels(graph=conclusion_graph)
 
-        # Optionally return a dictionary with all intermediate results
+        # Return intermediate component labels when requested.
         if get_dicc:
+            tachysystole = self._get_tachysystole_condition(center=center)
             return {
                 "baseline": base_labels,
                 "deceleration": decelerations_labels,
                 "variability": variability_labels,
+                "tachysystole": pd.Series(tachysystole),
                 "conclusion": conclusion_labels,
             }
 
@@ -1325,18 +578,15 @@ class CTG:
         center: bool = False,
     ) -> pd.Series:
         """
-        Compute and classify the FHR baseline using FIGO thresholds.
+        Estimate and classify the FHR baseline using the implemented FIGO-based thresholds.
 
-        This method calculates the baseline of the FHR signal using a rolling mean,
-        then classifies each time point based on FIGO guidelines:
-            - NORMAL: 110–160 bpm
-            - SUSPICIOUS: <110 bpm or >160 bpm
-            - PATHOLOGICAL: <100 bpm
-
-        Optionally, it can display plots of the FHR signal with classification overlays.
+        The baseline is obtained with the event-exclusion procedure implemented in
+        `_get_baseline()`. Each valid estimate is then assigned to the corresponding
+        baseline category. Optionally, the resulting classification can be plotted
+        over the FHR signal.
 
         Args:
-            baseline_window_min_size (int): Minimum window size (in seconds) used to compute the baseline.
+            window_min_size (int): Baseline estimation window, in minutes.
             graph (bool): Whether to display the baseline and classification graphs.
             center (bool): Whether the rolling mean should be centered.
 
@@ -1344,131 +594,115 @@ class CTG:
             pd.Series: A pandas Series containing the classification labels for each time point.
         """
 
-        # Initialize a label array with NaNs, same shape as FHR
+        # Initialize labels as missing until a valid baseline estimate is available.
         labels = np.nan * np.ones_like(self.fhr)
 
-        # Compute the baseline (rolling mean of FHR)
+        # Estimate the FHR baseline.
         baseline = self._get_baseline(window_min_size=window_min_size, center=center)
 
-        # TODO: Por encima de 160 no indica hipoxia (Asegurarme y cambiarlo)
-        # Apply FIGO classification thresholds
-        labels[(baseline >= 110.0) & (baseline <= 160.0)] = self.NORMAL
-        labels[(baseline < 110.0) | (baseline > 160.0)] = self.SUSPICIOUS
-        labels[(baseline < 100)] = self.PATHOLOGICAL
+        # Assign the baseline category using the configured FIGO thresholds.
+        labels[(baseline >= 110.0) & (baseline <= 160.0)] = self.config.labels.normal
+        labels[(baseline < 110.0) | (baseline > 160.0)] = self.config.labels.suspicious
+        labels[(baseline < 100)] = self.config.labels.pathological
 
-        # Store baseline and labels as class attributes
+        # Store the baseline and labels for subsequent rule evaluation.
         self._baseline = baseline
         self._baseline_labels = labels
 
-        # Optionally plot the results
+        # Plot the result when requested.
         if graph:
             self._baseline_graph(show=1, grid=None)
-            self._get_baseline_graph()
 
         return pd.Series(labels)
 
     def _get_decelerations_labels(
         self,
         center: bool = False,
-        # -- baseline info (Only check) --
         window_time_baseline: int = 10,
-        # -- dec condition --
         amplitude_dec_cond: int = 15,
         time_in_deceleration: int = 15,
-        # -- rep dec cond --
         time_in_rep_dec: int = 30,
         correlation_threshold: float = -0.4,
-        # -- late_dec_cond --
         time_in_late_dec_cond: int = 30,
         contraction_time_shift: int = 20,
         contraction_value_threshold: int = 10,
         contraction_duration_threshold: int = 20,
         contraction_baseline_duration: int = 120,
-        # -- prolonged dec cond --
         time_in_prolonged_dec: int = 3,
-        # -- rep dec + red variab --
         time_in_rep_dec_for_red_var: int = 20,
         red_var_duration_baseline: int = 50,
         red_var_duration_deceleration: int = 3,
         red_var_bandwith: int = 5,
-        # -- time for pathological prolonged dec --
         time_patholog_prolonged_dec: int = 5,
-        # -- graph --
         graph: bool = False,
     ) -> pd.Series:
         """
-        Classify fetal heart rate (FHR) decelerations using FIGO criteria into:
-            - Normal
-            - Suspicious
-            - Pathological
+        Classify deceleration-related CTG patterns.
 
-        Combines multiple deceleration types based on:
-            • Amplitude and duration,
-            • Temporal relationship with uterine contractions,
-            • Repetitiveness and variability.
+        Basic detected decelerations are initially classified as suspicious.
+        Pathological labels are subsequently assigned for:
 
-        Args:
-            center (bool): Whether to center rolling window computations.
-            window_time_baseline (int): Minutes used to compute baseline FHR.
-            amplitude_dec_cond (int): Minimum drop in bpm to qualify as a deceleration.
-            time_in_deceleration (int): Minimum duration (in seconds) of a deceleration.
-            time_in_rep_dec (int): Duration (in minutes) for detecting repetitive decelerations.
-            correlation_threshold (float): Threshold for correlation with contractions.
-            time_in_late_dec_cond (int): Minimum time to consider a deceleration as 'late'.
-            contraction_time_shift (int): Seconds to shift contraction signal for alignment.
-            contraction_value_threshold (int): Intensity threshold for a contraction.
-            contraction_duration_threshold (int): Duration threshold to qualify as contraction.
-            contraction_baseline_duration (int): Baseline window for contraction detection.
-            time_in_prolonged_dec (int): Duration (in minutes) for prolonged deceleration.
-            time_in_rep_dec_for_red_var (int): Duration for combining rep dec + red variability.
-            red_var_duration_baseline (int): Duration for reduced variability at baseline.
-            red_var_duration_deceleration (int): Duration for reduced variability in deceleration.
-            red_var_bandwith (int): Variability threshold (in bpm).
-            time_patholog_prolonged_dec (int): Duration (in minutes) for pathological prolonged deceleration.
-            graph (bool): Whether to display the deceleration graph.
-
-        Returns:
-            pd.Series: Deceleration labels (NORMAL, SUSPICIOUS, PATHOLOGICAL).
+        - repetitive late or prolonged decelerations over 30 min,
+        - repetitive late or prolonged decelerations over 20 min
+        when associated with reduced variability,
+        - a single prolonged deceleration lasting >5 min.
         """
 
-        # Return if FHR is entirely NaN
-        if self.fhr.isna().all():
+        fhr = np.asarray(
+            self.fhr,
+            dtype=float,
+        )
+
+        # Invalid FHR
+
+        if np.isnan(fhr).all():
+
             self._decelerations_labels = pd.Series(
-                np.nan, index=self.fhr.index, dtype="float"
+                np.nan,
+                index=np.arange(len(fhr)),
+                dtype=float,
             )
+
             return self._decelerations_labels
 
-        # Compute baseline if not already available
-        if not hasattr(self, "_baseline"):
+        # Baseline
+
+        if not hasattr(
+            self,
+            "_baseline",
+        ):
+
             self._baseline = self._get_baseline(
-                window_min_size=window_time_baseline, center=center
+                window_min_size=window_time_baseline,
+                center=center,
             )
 
-        # Step 1: Detect simple decelerations (based on amplitude + duration)
+        # Basic deceleration detection
+
         dec_cond = self._get_deceleration_condition(
             amplitude_deceleration=amplitude_dec_cond,
             time_in_deceleration=time_in_deceleration,
         )
 
-        # Initialize label series with NaNs
-        dec_label = pd.Series(np.nan, index=self.fhr.index, dtype="float")
-
-        # Mark suspicious decelerations and normal zones
-        dec_label[dec_cond == True] = self.SUSPICIOUS  # hay una desaceleración
-        dec_label[dec_cond == False] = self.NORMAL
-
-        # Step 2: Identify pathological patterns
-
-        # 2.1 Repetitive decelerations (late or prolonged) > 30 min
-        rep_dec_30_min_cond = self._get_repetitive_deceleration_condition(
-            time_in_rep_dec=time_in_rep_dec,
-            correlation_threshold=-correlation_threshold,
-            center=center,
+        dec_label = pd.Series(
+            np.nan,
+            index=np.arange(len(fhr)),
+            dtype=float,
         )
 
-        late_dec_cond = self._get_late_deceleration_condition(
-            center=center,
+        dec_valid = ~pd.isna(dec_cond)
+
+        # No detected deceleration
+        dec_label[dec_valid & (dec_cond == False)] = self.config.labels.normal
+
+        # Basic deceleration detected
+        dec_label[dec_valid & (dec_cond == True)] = self.config.labels.suspicious
+
+        # LATE DECELERATIONS
+
+        late = self._get_late_deceleration_condition(
             dec_cond=dec_cond,
+            center=center,
             time_in_late_dec_cond=time_in_late_dec_cond,
             contraction_time_shift=contraction_time_shift,
             contraction_value_threshold=contraction_value_threshold,
@@ -1476,23 +710,62 @@ class CTG:
             contraction_baseline_duration=contraction_baseline_duration,
         )
 
-        prol_dec_3_min_cond = self._get_prolonged_deceleration_condition(
-            dec_cond, time_in_prolonged_dec=time_in_prolonged_dec, center=center
+        late_bool = np.array(
+            [x is True or x == 1 for x in late],
+            dtype=bool,
         )
 
-        dec_label[
-            (rep_dec_30_min_cond == True)
-            & ((late_dec_cond == True) | (prol_dec_3_min_cond == True))
-        ] = self.PATHOLOGICAL
+        # PROLONGED >3 MIN
 
-        # 2.2 Repetitive decelerations > 20 min with reduced variability
-        rep_dec_20_min_cond = self._get_repetitive_deceleration_condition(
-            time_in_rep_dec=time_in_rep_dec_for_red_var,
-            correlation_threshold=correlation_threshold,
+        prolonged_3 = self._get_prolonged_deceleration_condition(
+            dec_cond,
+            time_in_prolonged_dec=time_in_prolonged_dec,
             center=center,
         )
 
-        red_var_cond = self._get_reduced_variability_condition(
+        prolonged_3_bool = np.array(
+            [x is True or x == 1 for x in prolonged_3],
+            dtype=bool,
+        )
+
+        # REPETITIVE >50% OVER 30 MIN
+
+        rep_30 = self._get_repetitive_deceleration_condition(
+            time_in_rep_dec=time_in_rep_dec,
+            contraction_value_threshold=contraction_value_threshold,
+            contraction_duration_threshold=contraction_duration_threshold,
+            contraction_baseline_duration=contraction_baseline_duration,
+            center=center,
+            # retained for backwards compatibility
+            correlation_threshold=correlation_threshold,
+        )
+
+        rep_30_bool = np.array(
+            [x is True or x == 1 for x in rep_30],
+            dtype=bool,
+        )
+
+        pathological_30 = rep_30_bool & (late_bool | prolonged_3_bool)
+
+        dec_label[pathological_30] = self.config.labels.pathological
+
+        # REPETITIVE >50% OVER 20 MIN + REDUCED VARIABILITY
+
+        rep_20 = self._get_repetitive_deceleration_condition(
+            time_in_rep_dec=time_in_rep_dec_for_red_var,
+            contraction_value_threshold=contraction_value_threshold,
+            contraction_duration_threshold=contraction_duration_threshold,
+            contraction_baseline_duration=contraction_baseline_duration,
+            center=center,
+            correlation_threshold=correlation_threshold,
+        )
+
+        rep_20_bool = np.array(
+            [x is True or x == 1 for x in rep_20],
+            dtype=bool,
+        )
+
+        red_var = self._get_reduced_variability_condition(
             center=center,
             amplitude_dec_cond=amplitude_dec_cond,
             time_in_deceleration=time_in_deceleration,
@@ -1501,41 +774,37 @@ class CTG:
             red_var_bandwith=red_var_bandwith,
         )
 
-        # TODO: (Hacer comentario) ->
-        # NOTA: No se entra nunca
-        dec_label[
-            (rep_dec_20_min_cond == True)
-            & (red_var_cond == True)
-            & ((late_dec_cond == True) | (prol_dec_3_min_cond == True))
-        ] = self.PATHOLOGICAL
-
-        # 2.3 A single prolonged deceleration (>5 minutes) is pathological
-        prol_dec_5_min_cond = self._get_prolonged_deceleration_condition(
-            dec_cond, time_in_prolonged_dec=time_patholog_prolonged_dec, center=center
+        red_var_bool = np.array(
+            [x is True or x == 1 for x in red_var],
+            dtype=bool,
         )
 
-        dec_label[prol_dec_5_min_cond == True] = self.PATHOLOGICAL
+        pathological_20 = rep_20_bool & red_var_bool & (late_bool | prolonged_3_bool)
 
-        # Store the result
+        dec_label[pathological_20] = self.config.labels.pathological
+
+        # SINGLE PROLONGED DECELERATION >5 MIN
+
+        prolonged_5 = self._get_prolonged_deceleration_condition(
+            dec_cond,
+            time_in_prolonged_dec=time_patholog_prolonged_dec,
+            center=center,
+        )
+
+        prolonged_5_bool = np.array(
+            [x is True or x == 1 for x in prolonged_5],
+            dtype=bool,
+        )
+
+        dec_label[prolonged_5_bool] = self.config.labels.pathological
+
+        # Store result
+
         self._decelerations_labels = dec_label
 
-        # Optionally plot the results
         if graph:
             self._decelerations_graph()
 
-        # TODO 1: BORRAR
-        # if time_in_rep_dec == 30 and any(dec_label.fillna(False)):
-        #     print("Se encontró un valor True. Deteniendo ejecución. id:", self.id)
-        #     sys.exit()
-
-        # BORRAR
-        # dec_label = pd.Series(np.nan, index=self.fhr.index, dtype="float")
-        # dec_label[
-        #     (rep_dec_30_min_cond == True)
-        #     & ((late_dec_cond == True) | (prol_dec_3_min_cond == True))
-        # ] = self.PATHOLOGICAL
-
-        # TODO 1 dec_le
         return dec_label
 
     def _get_variability_labels(
@@ -1551,63 +820,34 @@ class CTG:
         red_var_duration_deceleration: int = 3,
         red_var_bandwith: int = 5,
     ) -> pd.Series:
-        """
-        Classify fetal heart rate (FHR) variability into NORMAL, SUSPICIOUS, and PATHOLOGICAL categories.
-
-        This method computes rolling 1-minute windows to estimate variability amplitude (bandwidth),
-        then applies thresholds to label segments of the signal. It also incorporates
-        pathological conditions detected by reduced or increased variability functions.
-
-        Args:
-            graph (bool): Whether to display the variability classification graphs.
-            center (bool): Whether the rolling window should be centered.
-            window_var (int): Window size multiplier (in minutes) for rolling calculations.
-            amplitude_dec_cond (int): Amplitude threshold for deceleration conditions.
-            time_in_deceleration (int): Duration threshold for deceleration detection.
-            incr_var_min_time (int): Minimum time to consider for increased variability.
-            incr_var_bandwidth (int): Bandwidth threshold for increased variability detection.
-            red_var_duration_baseline (int): Duration for reduced variability at baseline.
-            red_var_duration_deceleration (int): Duration for reduced variability during deceleration.
-            red_var_bandwith (int): Bandwidth threshold for reduced variability.
-
-        Returns:
-            pd.Series: Series with variability classification labels (NORMAL, SUSPICIOUS, PATHOLOGICAL).
-        """
-
-        FHR = self.fhr
+        fhr = np.asarray(self.fhr, dtype=float)
         freq = self.frequency
+        if not hasattr(self, "_baseline"):
+            self._baseline = self._get_baseline(window_min_size=10, center=center)
 
-        # Compute 1-minute rolling maximum and minimum FHR
-        max_FHR_1_min = FHR.rolling(
-            window=freq * 60 * window_var,
-            min_periods=int(self.NOT_NAN_PERC * freq * 60 * window_var),
-            center=center,
-        ).max()
-        min_FHR_1_min = FHR.rolling(
-            window=freq * 60 * window_var,
-            min_periods=int(self.NOT_NAN_PERC * freq * 60 * window_var),
-            center=center,
-        ).min()
-
-        # Calculate FHR bandwidth (variability amplitude)
-        FHR_bandwith_1_min = max_FHR_1_min - min_FHR_1_min
-
-        # Initialize output labels as NaNs
-        var_labels = np.nan * np.ones_like(FHR)
-
-        # Label NORMAL variability: 5–25 bpm amplitude
-        # TODO: Poner estos intervalos como param
-        var_labels[(FHR_bandwith_1_min >= 5) & (FHR_bandwith_1_min <= 25)] = self.NORMAL
-
-        # Label SUSPICIOUS variability: amplitude < 5 or > 25 bpm
-        # Suspicious if < 5 or > 25
-        var_labels[(FHR_bandwith_1_min < 5) | (FHR_bandwith_1_min > 25)] = (
-            self.SUSPICIOUS
+        event_mask = self._get_event_mask(
+            fhr,
+            np.asarray(self._baseline, dtype=float),
+            amplitude=15,
+            duration_sec=15,
+        )
+        clean = fhr.copy()
+        clean[event_mask] = np.nan
+        s = pd.Series(clean)
+        w = max(1, int(freq * 60 * window_var))
+        mp = max(1, int(self.config.correlation.not_nans_threshold_porc * w))
+        bandwidth = (
+            s.rolling(w, min_periods=mp, center=center).max()
+            - s.rolling(w, min_periods=mp, center=center).min()
         )
 
-        # Label PATHOLOGICAL variability based on:
-        # 1. Reduced variability
-        red_var_cond = self._get_reduced_variability_condition(
+        var_labels = np.full(len(fhr), np.nan, dtype=float)
+        bw = bandwidth.to_numpy()
+        valid = np.isfinite(bw)
+        var_labels[valid & (bw >= 5) & (bw <= 25)] = self.config.labels.normal
+        var_labels[valid & ((bw < 5) | (bw > 25))] = self.config.labels.suspicious
+
+        red_var = self._get_reduced_variability_condition(
             center=center,
             amplitude_dec_cond=amplitude_dec_cond,
             time_in_deceleration=time_in_deceleration,
@@ -1615,25 +855,19 @@ class CTG:
             red_var_duration_deceleration=red_var_duration_deceleration,
             red_var_bandwith=red_var_bandwith,
         )
-        var_labels[(red_var_cond == True)] = self.PATHOLOGICAL  # CAMBIO: == -> = XD
-
-        # 2. Increased variability
-        inc_var_cond = self._get_increased_variability_condition(
+        inc_var = self._get_increased_variability_condition(
             center=center,
             window_var=window_var,
             min_time=incr_var_min_time,
             bandwidth_min=incr_var_bandwidth,
         )
-        var_labels[(inc_var_cond == True)] = self.PATHOLOGICAL
+        red_bool = np.array([x is True or x == 1 for x in red_var], dtype=bool)
+        inc_bool = np.array([x is True or x == 1 for x in inc_var], dtype=bool)
+        var_labels[red_bool | inc_bool] = self.config.labels.pathological
 
-        # Store the result in an instance variable
         self._variability_labels = var_labels
-
-        # Optionally display graph of variability classification
         if graph:
             self._variability_graph()
-            self._get_variability_graph(center=center)
-
         return pd.Series(var_labels)
 
     def _get_conclusion_labels(self, graph: bool = True) -> pd.Series:
@@ -1666,24 +900,24 @@ class CTG:
 
         # Assign "SUSPICIOUS" if any of the components is suspicious
         conclusion_labels[
-            (baseline_labels == self.SUSPICIOUS)
-            | (decelerations_labels == self.SUSPICIOUS)
-            | (variability_labels == self.SUSPICIOUS)
-        ] = self.SUSPICIOUS
+            (baseline_labels == self.config.labels.suspicious)
+            | (decelerations_labels == self.config.labels.suspicious)
+            | (variability_labels == self.config.labels.suspicious)
+        ] = self.config.labels.suspicious
 
         # Assign "NORMAL" only if all three components are normal
         conclusion_labels[
-            (baseline_labels == self.NORMAL)
-            & (decelerations_labels == self.NORMAL)
-            & (variability_labels == self.NORMAL)
-        ] = self.NORMAL
+            (baseline_labels == self.config.labels.normal)
+            & (decelerations_labels == self.config.labels.normal)
+            & (variability_labels == self.config.labels.normal)
+        ] = self.config.labels.normal
 
         # Assign "PATHOLOGICAL" if any of the components is pathological
         conclusion_labels[
-            (baseline_labels == self.PATHOLOGICAL)
-            | (decelerations_labels == self.PATHOLOGICAL)
-            | (variability_labels == self.PATHOLOGICAL)
-        ] = self.PATHOLOGICAL
+            (baseline_labels == self.config.labels.pathological)
+            | (decelerations_labels == self.config.labels.pathological)
+            | (variability_labels == self.config.labels.pathological)
+        ] = self.config.labels.pathological
 
         # Store result in instance variable
         self._conclusion_labels = conclusion_labels
@@ -1694,232 +928,344 @@ class CTG:
 
         return pd.Series(conclusion_labels)
 
-    ## -----------------------------------------------------
-    ## --------------- GRAPHS FUNCTIONS --------------------
+    # -------------------------------------------------------------------------
+    # FIGO ANALYSIS PLOTS
+    # -------------------------------------------------------------------------
 
     def _baseline_graph(self, show: int = 0, grid=None) -> None:
-        """
-        Plot the FHR signal with background regions based on baseline classification.
-
-        This method displays the Fetal Heart Rate (FHR) signal and highlights time
-        intervals classified into different baseline categories:
-            - 0: Normal (green)
-            - 1: Suspicious (orange)
-            - 2: Pathological (red)
-
-        Optionally integrates into a provided subplot grid and can display the plot immediately.
-
-        Args:
-            show (int, optional): If 0, the plot is shown immediately. Defaults to 0.
-            grid (matplotlib.gridspec.SubplotSpec, optional): Grid position for subplot.
-                If None, a standalone figure is created.
-
-        Returns:
-            None
-        """
+        """Plot the FHR signal with the baseline FIGO classification."""
 
         t = self._time / 60
-        baseline_labels = self._baseline_labels
+        labels = np.asarray(self._baseline_labels)
 
-        # Set up the figure and axis for plotting
-        if grid == None:
-            _, ax = plt.subplots(figsize=(18, 6))
+        if grid is None:
+            fig, ax = plt.subplots(figsize=(10, 3.5))
         else:
             ax = plt.subplot(grid)
+            fig = ax.figure
 
-        # Plot the FHR signal
-        ax.set_title("BASELINE", fontsize=25)
-        ax.plot(t, self.fhr, linewidth=1.5, color="black")
+        # FHR signal
+        ax.plot(
+            t,
+            self.fhr,
+            linewidth=1.1,
+            color="black",
+            zorder=3,
+        )
 
-        # Highlight different baseline classification zones
+        # FIGO classification regions
         ax.fill_between(
-            t, 0, 250, where=(baseline_labels == 0), color="#388E3C", alpha=0.4
-        )  # Normal
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.normal),
+            color="#388E3C",
+            alpha=0.6,
+            linewidth=0,
+        )
+
         ax.fill_between(
-            t, -1, 250, where=(baseline_labels == 1), color="#F58220", alpha=0.4
-        )  # Suspicious
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.suspicious),
+            color="#F58220",
+            alpha=0.6,
+            linewidth=0,
+        )
+
         ax.fill_between(
-            t, -1, 250, where=(baseline_labels == 2), color="#E04A3F", alpha=0.4
-        )  # Pathological
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.pathological),
+            color="#E04A3F",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        # Configure axis ticks and labels
-        plt.xticks(np.linspace(0, 30, 5))
-        ax.tick_params(axis="both", labelsize=25)
-        plt.ylabel("FHR (bpm)", fontsize=25)
-        plt.xlabel("Time (min)", fontsize=25)
-        plt.ylim(50, 200)
+        # Formatting
+        ax.set_title("Baseline", fontsize=14, pad=8)
+        ax.set_xlabel("Time (min)", fontsize=11)
+        ax.set_ylabel("FHR (bpm)", fontsize=11)
 
-        plt.savefig("baseline_graph.pdf", format="pdf", bbox_inches="tight")
+        ax.tick_params(
+            axis="both",
+            labelsize=10,
+        )
 
-        # Show the plot if requested
+        ax.set_ylim(50, 200)
+        ax.set_xlim(t.min(), t.max())
+
+        ax.set_xticks(np.linspace(t.min(), t.max(), 6))
+
+        ax.grid(False)
+
+        # Cleaner appearance
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        fig.tight_layout()
+
+        if grid is None:
+            fig.savefig(
+                "fig/baseline_graph.pdf",
+                format="pdf",
+                bbox_inches="tight",
+            )
+
         if show == 0:
             plt.show()
 
     def _decelerations_graph(self, show: int = 0, grid=None) -> None:
-        """
-        Plot the fetal heart rate (FHR) signal and highlight deceleration classifications.
-
-        This method visualizes decelerations using color-coded regions:
-            - Green: Normal (label 0)
-            - Orange: Suspicious (label 1)
-            - Red: Pathological (label 2)
-
-        Optionally supports integration into subplot grids.
-
-        Args:
-            show (int): If 0, display the plot immediately using plt.show().
-            grid (matplotlib.gridspec.SubplotSpec or None): Optional subplot configuration.
-
-        Returns:
-            None
-        """
+        """Plot the FHR signal with the deceleration FIGO classification."""
 
         t = self._time / 60
-        s1 = self.fhr
-        s2 = self._decelerations_labels
+        labels = np.asarray(self._decelerations_labels)
 
-        # Create new figure and axis if no grid is specified
-        if grid == None:
-            # _, ax = plt.subplots(figsize=(8, 3))
-            _, ax = plt.subplots(figsize=(18, 6))
+        if grid is None:
+            fig, ax = plt.subplots(figsize=(10, 3.5))
         else:
             ax = plt.subplot(grid)
+            fig = ax.figure
 
-        ax.set_title("DECELERATIONS", fontsize=25)
-        ax.plot(t, s1, linewidth=1.5, color="black")
+        # FHR signal
+        ax.plot(
+            t,
+            self.fhr,
+            linewidth=1.1,
+            color="black",
+            zorder=3,
+        )
 
-        # if UC is not None:
-        #     ax.plot(t, UC, color="grey")
+        # FIGO classification regions
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.normal),
+            color="#388E3C",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        # Highlight different deceleration categories
-        ax.fill_between(t, 0, 250, where=(s2 == 0), color="#388E3C", alpha=0.4)
-        ax.fill_between(t, -1, 250, where=(s2 == 1), color="#F58220", alpha=0.4)
-        ax.fill_between(t, -1, 250, where=(s2 == 2), color="#E04A3F", alpha=0.4)
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.suspicious),
+            color="#F58220",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        plt.xticks(np.linspace(0, 30, 5))
-        ax.tick_params(axis="both", labelsize=25)
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.pathological),
+            color="#E04A3F",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        plt.ylabel("FHR (bpm)", fontsize=25)
-        plt.xlabel("Time (min)", fontsize=25)
-        plt.ylim(50, 200)
+        # Formatting
+        ax.set_title("Decelerations", fontsize=14, pad=8)
+        ax.set_xlabel("Time (min)", fontsize=11)
+        ax.set_ylabel("FHR (bpm)", fontsize=11)
 
-        plt.savefig("deceleration_graph.pdf", format="pdf", bbox_inches="tight")
+        ax.tick_params(
+            axis="both",
+            labelsize=10,
+        )
 
-        # Display plot if requested
+        ax.set_ylim(50, 200)
+        ax.set_xlim(t.min(), t.max())
+
+        ax.set_xticks(np.linspace(t.min(), t.max(), 6))
+
+        ax.grid(False)
+
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        fig.tight_layout()
+
+        if grid is None:
+            fig.savefig(
+                "fig/deceleration_graph.pdf",
+                format="pdf",
+                bbox_inches="tight",
+            )
+
         if show == 0:
             plt.show()
 
-    def _variability_graph(
-        self,
-        show: int = 0,
-        grid=None,
-    ) -> None:
-        """
-        Plot the fetal heart rate (FHR) signal with background regions based on variability classification.
+    def _variability_graph(self, show: int = 0, grid=None) -> None:
+        """Plot the FHR signal with the variability FIGO classification."""
 
-        This method displays the FHR signal and highlights time intervals classified into different variability categories:
-            - 0: Normal (green)
-            - 1: Suspicious (orange)
-            - 2: Pathological (red)
-
-        Optionally integrates into a provided subplot grid and can display the plot immediately.
-
-        Args:
-            show (int, optional): If 0, display the plot immediately. Defaults to 0.
-            grid (matplotlib.gridspec.SubplotSpec or None, optional): Grid position for subplot.
-                If None, a standalone figure is created.
-
-        Returns:
-            None
-        """
-
-        s2 = self._variability_labels
         t = self._time / 60
+        labels = np.asarray(self._variability_labels)
 
-        # Setup figure and axis depending on grid argument
-        if grid == None:
-            # _, ax = plt.subplots(figsize=(8, 3))
-            _, ax = plt.subplots(figsize=(18, 6))
+        if grid is None:
+            fig, ax = plt.subplots(figsize=(10, 3.5))
         else:
             ax = plt.subplot(grid)
+            fig = ax.figure
 
-        ax.set_title("VARIABILITY", fontsize=25)
+        # FHR signal
+        ax.plot(
+            t,
+            self.fhr,
+            linewidth=1.1,
+            color="black",
+            zorder=3,
+        )
 
-        # Plot the FHR signal in black
-        ax.plot(t, self.fhr, color="black")
+        # FIGO classification regions
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.normal),
+            color="#388E3C",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        # Highlight regions based on variability classification
-        ax.fill_between(t, 0, 250, where=(s2 == 0), color="#388E3C", alpha=0.4)
-        ax.fill_between(t, -1, 250, where=(s2 == 1), color="#F58220", alpha=0.4)
-        ax.fill_between(t, -1, 250, where=(s2 == 2), color="#E04A3F", alpha=0.4)
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.suspicious),
+            color="#F58220",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        # Configure axes ticks and labels
-        plt.xticks(np.linspace(t.min(), t.max(), 5))
-        ax.tick_params(axis="both", labelsize=25)
-        plt.ylabel("FHR (bpm)", fontsize=25)
-        plt.xlabel("Time (min)", fontsize=25)
-        plt.ylim(50, 200)
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.pathological),
+            color="#E04A3F",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        # TODO 1: Borrar
-        plt.savefig("variability_graph.pdf", format="pdf", bbox_inches="tight")
+        # Formatting
+        ax.set_title("Variability", fontsize=14, pad=8)
+        ax.set_xlabel("Time (min)", fontsize=11)
+        ax.set_ylabel("FHR (bpm)", fontsize=11)
 
-        # Show plot immediately if requested
+        ax.tick_params(
+            axis="both",
+            labelsize=10,
+        )
+
+        ax.set_ylim(50, 200)
+        ax.set_xlim(t.min(), t.max())
+
+        ax.set_xticks(np.linspace(t.min(), t.max(), 6))
+
+        ax.grid(False)
+
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        fig.tight_layout()
+
+        if grid is None:
+            fig.savefig(
+                "fig/variability_graph.pdf",
+                format="pdf",
+                bbox_inches="tight",
+            )
+
         if show == 0:
             plt.show()
 
     def _conclusion_graph(self) -> None:
-        """
-        Plot a comprehensive figure showing baseline, decelerations, variability, and the final conclusion.
-
-        The plot is arranged in a 3x2 grid with:
-            - Baseline classification plot (top-left)
-            - Decelerations classification plot (middle-left)
-            - Variability classification plot (bottom-left)
-            - Final conclusion plot (middle-right)
-
-        The final conclusion plot overlays the FHR signal with colored regions indicating:
-            - 0: Normal (green)
-            - 1: Suspicious (orange)
-            - 2: Pathological (red)
-
-        Returns:
-            None
-        """
-
-        plt.figure(figsize=(18, 6))
+        """Plot the final FIGO-based CTG classification."""
 
         t = self._time / 60
-        s2 = self._conclusion_labels
+        labels = np.asarray(self._conclusion_labels)
 
-        # Plot the FHR signal
-        plt.title("CONCLUSION", fontsize=25)
-        plt.plot(t, self.fhr, linewidth=1.5, color="black")
+        fig, ax = plt.subplots(figsize=(10, 3.5))
 
-        # Highlight different baseline classification zones
-        plt.fill_between(
-            t, 0, 250, where=(s2 == 0), color="#388E3C", alpha=0.4
-        )  # Normal
-        plt.fill_between(
-            t, -1, 250, where=(s2 == 1), color="#F58220", alpha=0.4
-        )  # Suspicious
-        plt.fill_between(
-            t, -1, 250, where=(s2 == 2), color="#E04A3F", alpha=0.4
-        )  # Pathological
+        # FHR signal
+        ax.plot(
+            t,
+            self.fhr,
+            linewidth=1.1,
+            color="black",
+            zorder=3,
+        )
 
-        # Configure axis ticks and labels
-        plt.xticks(np.linspace(t.min(), t.max(), 5))
-        plt.tick_params(axis="both", labelsize=25)
-        plt.ylabel("FHR (bpm)", fontsize=25)
-        plt.xlabel("Time (min)", fontsize=25)
-        plt.ylim(50, 200)
+        # Final classification regions
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.normal),
+            color="#388E3C",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        plt.savefig("conclusion_graph.pdf", format="pdf", bbox_inches="tight")
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.suspicious),
+            color="#F58220",
+            alpha=0.6,
+            linewidth=0,
+        )
 
-        # Show the full figure
+        ax.fill_between(
+            t,
+            50,
+            200,
+            where=(labels == self.config.labels.pathological),
+            color="#E04A3F",
+            alpha=0.6,
+            linewidth=0,
+        )
+
+        # Formatting
+        ax.set_title("Final classification", fontsize=14, pad=8)
+        ax.set_xlabel("Time (min)", fontsize=11)
+        ax.set_ylabel("FHR (bpm)", fontsize=11)
+
+        ax.tick_params(
+            axis="both",
+            labelsize=10,
+        )
+
+        ax.set_ylim(50, 200)
+        ax.set_xlim(t.min(), t.max())
+
+        ax.set_xticks(np.linspace(t.min(), t.max(), 6))
+
+        ax.grid(False)
+
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        fig.tight_layout()
+
+        fig.savefig(
+            "fig/conclusion_graph.pdf",
+            format="pdf",
+            bbox_inches="tight",
+        )
+
         plt.show()
 
-    ## -----------------------------------------------------
-    ## --------------- AUXILIARY FUNCTIONS -----------------
+    # -------------------------------------------------------------------------
+    # AUXILIARY METHODS
+    # -------------------------------------------------------------------------
     @staticmethod
     def shift_numpy(arr: np.ndarray, lag: int, fill_value=np.nan) -> np.ndarray:
         if lag == 0:
@@ -1941,31 +1287,133 @@ class CTG:
                 result[:-abs_lag] = arr[abs_lag:]
         return result
 
-    def _get_baseline(self, window_min_size: float, center: bool = False) -> pd.Series:
+    def _get_baseline(
+        self,
+        window_min_size: float,
+        center: bool = False,
+        exclude_events: bool = True,
+    ) -> pd.Series:
         """
-        Compute the rolling baseline of the fetal heart rate (FHR) signal.
+        Estimate the FHR baseline over a rolling window.
 
-        The baseline is calculated as the rolling mean over a specified window in minutes.
-        It smooths the FHR signal to identify the underlying baseline trend.
-
-        Args:
-            window_min_size (float): Window size in minutes to compute the rolling mean.
-            center (bool): If True, the rolling window is centered. If False (default),
-                        the window is right-aligned.
-
-        Returns:
-            pd.Series: Rolling baseline values for the FHR signal, with NaNs where insufficient data.
+        A robust preliminary baseline is first obtained using a rolling median.
+        Sustained FHR excursions are identified relative to this estimate and
+        excluded from the signal. The final baseline is then computed as the
+        rolling mean of the remaining samples. If too few valid samples remain,
+        the preliminary median estimate is retained.
         """
+        fhr = np.asarray(self.fhr, dtype=float)
+        window_size = max(1, int(window_min_size * 60 * self.frequency))
+        min_valid = max(
+            1,
+            int(window_size * self.config.correlation.not_nans_threshold_porc),
+        )
 
-        window_size = int(window_min_size * 60 * self.frequency)
-        min_valid = int(window_size * self.NOT_NAN_PERC)
-
-        # Compute rolling mean (baseline) over the defined time window
-        return self.fhr.rolling(
+        fhr_series = pd.Series(fhr)
+        baseline_initial = fhr_series.rolling(
             window=window_size,
             min_periods=min_valid,
             center=center,
-        ).mean()
+        ).median()
+
+        if not exclude_events:
+            return baseline_initial
+
+        event_mask = self._get_event_mask(
+            fhr=fhr,
+            baseline=baseline_initial.to_numpy(),
+            amplitude=15.0,
+            duration_sec=15.0,
+            recovery_tolerance_bpm=5.0,
+            recovery_sec=5.0,
+        )
+
+        fhr_clean = fhr.copy()
+        fhr_clean[event_mask] = np.nan
+
+        baseline = (
+            pd.Series(fhr_clean)
+            .rolling(
+                window=window_size,
+                min_periods=min_valid,
+                center=center,
+            )
+            .mean()
+        )
+
+        # conservamos la estimación robusta inicial en vez de perder toda la baseline.
+        baseline = baseline.where(~baseline.isna(), baseline_initial)
+        return baseline
+
+    def _get_event_mask(
+        self,
+        fhr: np.ndarray,
+        baseline: np.ndarray,
+        amplitude: float = 15.0,
+        duration_sec: float = 15.0,
+        recovery_tolerance_bpm: float = 5.0,
+        recovery_sec: float = 5.0,
+    ) -> np.ndarray:
+        """
+        Identify sustained FHR excursions from a preliminary baseline.
+
+        Candidate events must exceed the amplitude threshold for at least the
+        minimum duration. Their boundaries are extended until the FHR returns
+        within the recovery tolerance of the baseline for a sustained period.
+        """
+        fhr = np.asarray(fhr, dtype=float)
+        baseline = np.asarray(baseline, dtype=float)
+        if len(fhr) != len(baseline):
+            raise ValueError("fhr and baseline must have the same length")
+
+        valid = ~np.isnan(fhr) & ~np.isnan(baseline)
+        diff = fhr - baseline
+        candidates = valid & (np.abs(diff) >= amplitude)
+        min_samples = max(1, int(duration_sec * self.frequency))
+        recovery_samples = max(1, int(recovery_sec * self.frequency))
+
+        mask = np.zeros(len(fhr), dtype=bool)
+        padded = np.r_[False, candidates, False]
+        transitions = np.diff(padded.astype(np.int8))
+        starts = np.flatnonzero(transitions == 1)
+        ends = np.flatnonzero(transitions == -1)
+
+        for core_start, core_end in zip(starts, ends):
+            if (core_end - core_start) < min_samples:
+                continue
+
+            sign = np.nanmedian(diff[core_start:core_end])
+            if np.isnan(sign):
+                continue
+            sign = 1.0 if sign >= 0 else -1.0
+
+            # mismo lado de la baseline y no haya recuperado la zona de ±5 bpm.
+            start = core_start
+            while start > 0:
+                d = diff[start - 1]
+                if np.isnan(d):
+                    break
+                if sign * d <= recovery_tolerance_bpm:
+                    break
+                start -= 1
+
+            end = core_end
+            i = core_end
+            while i < len(fhr):
+                j = min(len(fhr), i + recovery_samples)
+                segment = diff[i:j]
+                if len(segment) == recovery_samples and np.all(
+                    np.isfinite(segment) & (np.abs(segment) <= recovery_tolerance_bpm)
+                ):
+                    end = i
+                    break
+                i += 1
+            else:
+                end = len(fhr)
+
+            mask[start:end] = True
+
+        return mask
 
     @staticmethod
     def _get_nan_series_from_series(series: pd.Series) -> pd.DataFrame:
@@ -2008,7 +1456,7 @@ class CTG:
 
     def _drop_tail_nans(
         self, fhr: np.ndarray, uc: np.ndarray
-    ) -> tuple[pd.Series, pd.Series]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Removes trailing NaN values from the end of two aligned pandas Series (fhr and uc).
 
@@ -2027,47 +1475,40 @@ class CTG:
         if not valid_mask.any():
             return fhr[:0], uc[:0]
 
-        # último índice válido
         last_valid_index = np.where(valid_mask)[0][-1]
 
         # Slice both Series up to the last valid index (inclusive)
         return fhr[: last_valid_index + 1], uc[: last_valid_index + 1]
 
-    def _replace_gaps(self, signal: pd.Series) -> pd.Series:
+    def _replace_gaps(self, signal: np.ndarray) -> np.ndarray:
         if len(signal) == 0:
             print("WARNING (ctg.replace_gaps): Señal vacia!!!")
             return signal.copy()
 
-        # Calculamos el límite de nan consecutivos
+        # Convert the maximum gap duration from seconds to samples.
         max_sec_gaps = self.config.preprocessing.max_sec_gaps
         freq = self.config.freq
-        num_datos_nan = (
-            max_sec_gaps * freq
-        ) + 1  # Sumamos 1 para incluir los x sec completos
+        num_datos_nan = (max_sec_gaps * freq) + 1
 
-        # 1. Encontrar bloques de NaNs y sus tamaños
+        # Identify contiguous missing-data gaps.
         is_nan = np.isnan(signal)
 
-        # label() agrupa los True (NaNs) consecutivos y les asigna un ID único
         labeled_gaps, _ = label(is_nan)
 
-        # Contamos el tamaño de cada grupo de NaNs
+        # Measure the length of each gap.
         gap_sizes = np.bincount(labeled_gaps)
 
-        # 2. Creamos una máscara de los NaNs que SÍ queremos interpolar (<= threshold)
-        # Ignoramos el índice 0 de bincount porque corresponde a los valores que NO son NaN
         gaps_to_interpolate = np.where(gap_sizes <= num_datos_nan)[0]
         gaps_to_interpolate = gaps_to_interpolate[gaps_to_interpolate != 0]
 
-        # Máscara final de elementos a rellenar
+        # Interpolate only gaps that satisfy the configured duration limit.
         mask_to_fill = np.isin(labeled_gaps, gaps_to_interpolate)
 
-        # 3. Interpolar usando Pandas (Lineal)
+        # Compute a linear interpolation of the signal.
         series = pd.Series(signal)
         interpolated_series = series.interpolate(method="linear")
 
-        # 4. Combinar: Solo aplicar la interpolación donde el gap era pequeño
-        # Mantenemos los NaNs originales en los gaps grandes
+        # Keep interpolation values only inside eligible gaps.
         res_signal = np.where(mask_to_fill, interpolated_series, signal)
 
         return res_signal
@@ -2077,196 +1518,211 @@ class CTG:
         amplitude_deceleration: int = 15,
         time_in_deceleration: int = 15,
     ) -> pd.Series:
-        """
-        Detect fetal heart rate (FHR) decelerations based on amplitude and duration criteria.
+        fhr = np.asarray(self.fhr, dtype=float)
+        baseline = np.asarray(self._baseline, dtype=float)
 
-        A deceleration is defined as a drop in FHR below the baseline with:
-            - Amplitude greater than `amplitude_deceleration` bpm (default 15 bpm)
-            - Duration longer than `time_in_deceleration` seconds (default 15 seconds)
+        events = self._get_deceleration_events(
+            amplitude_deceleration=amplitude_deceleration,
+            time_in_deceleration=time_in_deceleration,
+        )
+        mask = np.zeros(len(fhr), dtype=bool)
+        for event in events:
+            mask[event["start_idx"] : event["end_idx"]] = True
 
-        The function uses a moving baseline and identifies sequences where the FHR
-        stays below the threshold for the required time. It also excludes false positives
-        where the heart rate does not actually decrease during the interval.
-
-        Args:
-            amplitude_deceleration (int, optional): Minimum amplitude drop in bpm to qualify (default 15).
-            time_in_deceleration (int, optional): Minimum duration in seconds below baseline to qualify (default 15).
-
-        Returns:
-            pd.Series: Boolean mask indexed as the original FHR signal,
-                    with True values indicating detected decelerations.
-        """
-
-        # The difference between the baseline and the FHR is calculated; this difference must be greater than 15.
-        # This baseline is calculated as a moving average with 10-minute windows.
-        is_deceleration = self._baseline - self.fhr > amplitude_deceleration
-
-        # Groups consecutive sequences with the same value in is_deceleration, assigning a unique ID to each group
-        group_id = (is_deceleration != is_deceleration.shift()).cumsum()
-        grouped = is_deceleration.groupby(group_id)
-
-        # Minimum time that deceleration must take
-        min_samples = int(time_in_deceleration * self.frequency)
-        mask = grouped.transform(
-            lambda x: x.sum() if x.all() and len(x) > min_samples else 0
-        ).astype(bool)
-
-        # -- Prevent it from detecting accelerations as decelerations --
-
-        # Select only the True values from the mask
-        true_serie = mask[mask]
-
-        # If there are no decelerations, return the original mask
-        if len(true_serie) == 0:
-            return mask
-
-        # Calculate differences between consecutive indices
-        diffs = np.diff(true_serie.index)  # resto los índices
-
-        # Identify new groups where the time gap between indices
-        # exceeds threshold (e.g., 0.25s if frequency is 4 Hz)
-        # (if it does not exceed 1/freq they are consecutive positions)
-        new_group = np.insert(diffs > (1 / self.frequency), 0, True).cumsum()
-
-        # Group the True values into consecutive blocks
-        grouped = true_serie.groupby(new_group)
-
-        # Iterate through each group of consecutive True values
-        for _, group in grouped:
-
-            # If the group does not start at index 0, go 0.25s back to find the deceleration start
-            if group.index[0] != 0:
-                start = group.index[0] - (0.25)
-            else:
-                start = group.index[0]
-
-            # The end is the last index of the group
-            end = group.index[-1]
-
-            # If heart rate did not drop (not a true deceleration), remove this block from the mask
-            if self.fhr.loc[start] - self.fhr.loc[end] < 0:
-                mask.loc[start:end] = False
-
-        return mask
+        invalid = np.isnan(fhr) | np.isnan(baseline)
+        result = pd.Series(mask.astype(object), index=np.arange(len(mask)))
+        result[invalid] = np.nan
+        return result
 
     @staticmethod
-    def _extend_condition_back(condition: pd.Series, window: int) -> pd.Series:
-        """
-        Extends True values backwards in a boolean pandas Series condition.
+    @staticmethod
+    def _extend_condition_back(condition, window: int) -> np.ndarray:
+        arr = np.asarray(condition, dtype=object).copy()
+        if window <= 1 or len(arr) == 0:
+            return arr
 
-        For each new True event in the Series, the function sets to True
-        all values in the preceding `window` length interval before the event.
-
-        Args:
-            condition (pd.Series): Boolean Series where True values mark events.
-            window (int): Number of samples to extend backwards.
-
-        Returns:
-            pd.Series: Modified Series with True values extended backwards.
-        """
-
-        for i in range(1, len(condition)):
-            # Check if current value is True and previous is False or NaN (start of a new True event)
-            # if condition.iloc[i] == True and (
-            #     condition.iloc[i - 1] == False
-            #     or np.isnan(condition.iloc[i - 1]) == True
-            # ):
-
-            # Cambiado .iloc[i] por [i] y optimizadas las comparaciones
-            if condition[i] == 1.0 and (
-                condition[i - 1] == 0.0 or np.isnan(condition[i - 1])
-            ):
-
-                # Calculate start index for extension
-                start_window = i - window + 1
-
-                if start_window < 0:
-                    # CAMBIO: condition.iloc[0:i] = np.ones(len(range(i)))
-                    # If window goes beyond start, set all values from 0 up to i to True
-                    condition[0:i] = True
-
-                else:
-                    # CAMBIO: condition.iloc[start_window:i] = np.ones(window-1)
-                    # Otherwise, set values from start_window to i-1 to True
-                    condition[start_window:i] = True
-
-        return condition
+        is_true = np.array([x is True or x == 1 for x in arr], dtype=bool)
+        prev_true = np.r_[False, is_true[:-1]]
+        starts = np.flatnonzero(is_true & ~prev_true)
+        for i in starts:
+            start = max(0, i - int(window) + 1)
+            arr[start:i] = True
+        return arr
 
     def _get_repetitive_deceleration_condition(
         self,
         time_in_rep_dec: int,
-        correlation_threshold: float = -0.4,
+        contraction_value_threshold: int = 10,
+        contraction_duration_threshold: int = 20,
+        contraction_baseline_duration: int = 120,
+        association_margin_sec: float = 60.0,
         center: bool = False,
+        correlation_threshold: float = -0.4,
     ) -> np.ndarray:
         """
-        Identify periods of repetitive decelerations based on negative correlation
-        between FHR and uterine contractions (UC).
+        Detect repetitive decelerations.
 
-        This method computes a rolling correlation between the FHR signal and UC signal.
-        When the correlation is below a specified negative threshold (e.g., -0.4), it is
-        considered indicative of decelerations linked to contractions, which may suggest
-        fetal compromise.
+        Decelerations are considered repetitive when they are associated
+        with more than 50% of the detected uterine contractions within
+        the specified analysis window.
 
-        The result is extended backwards in time over the specified window to capture
-        the full temporal context of the condition.
+        At least two contractions must be present in the analysis window.
 
-        Args:
-            time_in_rep_dec (int): Length of the rolling window in minutes for correlation analysis.
-            correlation_threshold (float): Threshold for negative correlation to define a deceleration.
-            center (bool): Whether to center the rolling window or align it to the right.
+        Notes
+        -----
+        `correlation_threshold` is retained only for backwards compatibility.
+        Correlation between FHR and UC is no longer used to determine
+        repetitiveness.
 
-        Returns:
-            np.ndarray: Boolean array indicating periods with repetitive deceleration conditions.
-                        NaN where correlation could not be calculated due to missing data.
+        Parameters
+        ----------
+        time_in_rep_dec : int
+            Duration of the analysis window in minutes.
+
+        contraction_value_threshold : int
+            UC increase above the estimated uterine baseline required
+            for contraction detection.
+
+        contraction_duration_threshold : int
+            Minimum contraction duration in seconds.
+
+        contraction_baseline_duration : int
+            Window used to estimate the UC baseline, in seconds.
+
+        association_margin_sec : float
+            Maximum temporal margin used when associating decelerations
+            with contractions.
+
+        center : bool
+            Whether the analysis window is centered.
+
+        correlation_threshold : float
+            Deprecated. Retained only for backwards compatibility.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean/object array indicating repetitive-deceleration periods.
+            NaN is returned where the condition cannot be evaluated.
         """
 
-        # Safety check: if there is no uterine contraction data, return an array of NaNs
-        if self.uc is None:
-            return np.nan * np.zeros(len(self.fhr))
+        n = len(self.fhr)
 
-        # Create rolling windows on FHR signal for correlation calculation
-        fhr_rolling = self.fhr.rolling(
-            window=time_in_rep_dec * self.frequency * 60,
-            min_periods=int(self.NOT_NAN_PERC * time_in_rep_dec * self.frequency * 60),
+        if self.uc is None:
+            return np.full(
+                n,
+                np.nan,
+                dtype=object,
+            )
+
+        # Detect contraction and deceleration events
+
+        contraction_events = self._get_contraction_events(
+            time_shift=0,
+            value_threshold=contraction_value_threshold,
+            duration_threshold=contraction_duration_threshold,
+            baseline_duration=contraction_baseline_duration,
             center=center,
         )
 
-        # Calculate rolling correlation of FHR with the full UC signal
-        corr_FHR_UC_X_min = fhr_rolling.corr(self.uc)
+        deceleration_events = self._get_deceleration_events()
 
-        # Condition is true where correlation drops below the threshold
-        # repetitive_deceleration_condition = corr_FHR_UC_X_min < correlation_threshold
+        if len(contraction_events) == 0:
+            return np.full(
+                n,
+                np.nan,
+                dtype=object,
+            )
 
-        # Preserve NaNs where correlation could not be computed
-        # repetitive_deceleration_condition[np.isnan(corr_FHR_UC_X_min)] = np.nan
+        # Associate contractions and decelerations
 
-        # Condition is true (1.0), false (0.0), or NaN if correlation could not be computed
-        repetitive_deceleration_condition = np.where(
-            np.isnan(corr_FHR_UC_X_min),
+        associations = self._associate_decelerations_to_contractions(
+            deceleration_events=deceleration_events,
+            contraction_events=contraction_events,
+            association_margin_sec=association_margin_sec,
+        )
+
+        # Represent each contraction by an impulse at its peak
+
+        contraction_impulse = np.zeros(
+            n,
+            dtype=float,
+        )
+
+        associated_impulse = np.zeros(
+            n,
+            dtype=float,
+        )
+
+        for association in associations:
+
+            contraction = association["contraction"]
+
+            peak = contraction["peak_idx"]
+
+            contraction_impulse[peak] = 1.0
+
+            if association["associated"]:
+                associated_impulse[peak] = 1.0
+
+        # Complete analysis window
+
+        window = max(
+            1,
+            int(time_in_rep_dec * 60 * self.frequency),
+        )
+
+        # IMPORTANT:
+        # min_periods=window means that a 30-min criterion is
+        # not evaluated before 30 min of signal are available.
+        total_contractions = (
+            pd.Series(contraction_impulse)
+            .rolling(
+                window=window,
+                min_periods=window,
+                center=center,
+            )
+            .sum()
+        )
+
+        associated_contractions = (
+            pd.Series(associated_impulse)
+            .rolling(
+                window=window,
+                min_periods=window,
+                center=center,
+            )
+            .sum()
+        )
+
+        # Fraction of contractions with a deceleration
+
+        ratio = associated_contractions / total_contractions.replace(
+            0,
             np.nan,
-            (corr_FHR_UC_X_min < correlation_threshold).astype(float),
         )
 
-        # Extend the condition backward in time to cover the whole window
-        repetitive_deceleration_condition = self._extend_condition_back(
-            repetitive_deceleration_condition,
-            window=60 * time_in_rep_dec * self.frequency,
+        # More than 50%, not >= 50%.
+        repetitive = (total_contractions >= 2) & (ratio > 0.5)
+
+        # Preserve undefined regions as NaN
+
+        result = np.full(
+            n,
+            np.nan,
+            dtype=object,
         )
 
-        # TODO 1: Borrar
-        # if (
-        #     time_in_rep_dec == 30
-        #     and any(repetitive_deceleration_condition.fillna(False))
-        #     and self.id != 1220
-        # ):
-        #     print("Se encontró un valor True. Deteniendo ejecución. id:", self.id)
-        #     sys.exit()
+        valid = total_contractions.notna() & (total_contractions > 0)
 
-        return repetitive_deceleration_condition
+        result[valid.to_numpy()] = repetitive[valid].to_numpy(dtype=bool)
 
+        return result
+
+    # FIGO: inicio/retorno gradual (>30 s) y, cuando UC está bien registrada,
     def _get_late_deceleration_condition(
         self,
-        dec_cond: np.ndarray,  # DUDA: Seguro que es un numpy array ??
+        dec_cond: np.ndarray,
         center: bool = False,
         time_in_late_dec_cond: int = 30,
         contraction_time_shift: int = 20,
@@ -2275,91 +1731,114 @@ class CTG:
         contraction_baseline_duration: int = 120,
     ) -> np.ndarray:
         """
-        Detect late decelerations based on duration and timing relative to uterine contractions.
+        Detect late decelerations based on deceleration morphology
+        and temporal relationship with uterine contractions.
 
-        A late deceleration is defined as a deceleration that:
-        - Lasts at least `time_in_late_dec_cond` seconds,
-        - Overlaps with a uterine contraction (shifted in time),
-        - Starts after the onset of the contraction (via time shift).
+        A detected deceleration is considered late when:
 
-        This method uses a binary deceleration condition (`dec_cond`) and
-        identifies where sustained deceleration aligns with contraction patterns.
+        1. Its onset-to-nadir time indicates a gradual decrease
+        (>= time_in_late_dec_cond seconds).
+        2. The deceleration starts after the onset of the contraction
+        by at least `contraction_time_shift` seconds.
+        3. The FHR nadir occurs after the contraction peak.
+        4. FHR recovery occurs after the end of the contraction.
 
-        Args:
-            dec_cond (np.ndarray): Boolean array indicating deceleration periods.
-            center (bool): Whether to center rolling windows.
-            time_in_late_dec_cond (int): Minimum duration (in seconds) of a deceleration to qualify as "late".
-            contraction_time_shift (int): Delay (in seconds) to align UC signal to physiological response.
-            contraction_value_threshold (int): Minimum amplitude over UC baseline to detect a contraction.
-            contraction_duration_threshold (int): Duration (in seconds) for contraction detection.
-            contraction_baseline_duration (int): Duration (in seconds) to compute dynamic UC baseline.
+        Parameters
+        ----------
+        dec_cond : np.ndarray
+            Deceleration condition mask. Retained for compatibility.
 
-        Returns:
-            np.ndarray: Boolean array indicating periods of late decelerations.
-                        NaN values indicate insufficient data for reliable computation.
+        center : bool
+            Whether rolling windows used for contraction detection are centered.
+
+        time_in_late_dec_cond : int
+            Minimum onset-to-nadir time, in seconds, used to define
+            a gradual deceleration.
+
+        contraction_time_shift : int
+            Minimum delay between contraction onset and deceleration onset.
+
+        contraction_value_threshold : int
+            UC amplitude threshold.
+
+        contraction_duration_threshold : int
+            Minimum contraction duration in seconds.
+
+        contraction_baseline_duration : int
+            UC baseline estimation window in seconds.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean/object array indicating late decelerations.
         """
 
-        # Return zeros if there is no uterine contraction data
+        n = len(self.fhr)
+
+        result = np.zeros(
+            n,
+            dtype=object,
+        )
+
         if self.uc is None:
-            return np.zeros(len(self.fhr))
+            result[:] = False
+            return result
 
-        # Check if decelerations persist for at least `time_in_late_dec_cond` seconds
-        max_dec = (
-            (1 * dec_cond)
-            .rolling(
-                window=self.frequency * time_in_late_dec_cond,
-                min_periods=int(
-                    self.NOT_NAN_PERC * self.frequency * time_in_late_dec_cond
-                ),
-                center=center,
-            )
-            .max()
-        )
-        min_dec = (
-            (1 * dec_cond)
-            .rolling(
-                window=self.frequency * time_in_late_dec_cond,
-                min_periods=int(
-                    self.NOT_NAN_PERC * self.frequency * time_in_late_dec_cond
-                ),
-                center=center,
-            )
-            .min()
-        )
+        # Extract events
 
-        # True if the entire 60-second window is part of a deceleration (value stays 1)
-        # (We have a deceleration that lasts one minute)
-        aux_late_deceleration_condition = (max_dec == 1) & (min_dec == 1)
+        deceleration_events = self._get_deceleration_events()
 
-        # Obtain the information from the contractions
-        shift_contr_condition = self._get_contraction_condition(
-            time_shift=contraction_time_shift,
+        contraction_events = self._get_contraction_events(
+            time_shift=0,
             value_threshold=contraction_value_threshold,
             duration_threshold=contraction_duration_threshold,
             baseline_duration=contraction_baseline_duration,
             center=center,
         )
 
-        # Late deceleration = long deceleration that overlaps with contraction (and starts after)
-        late_deceleration_condition = (aux_late_deceleration_condition == True) & (
-            shift_contr_condition == True
+        delay_samples = int(contraction_time_shift * self.frequency)
+
+        # Evaluate each deceleration
+
+        for deceleration in deceleration_events:
+
+            # Gradual fall: onset -> nadir >= 30 s by default
+            gradual = deceleration["onset_to_nadir_sec"] >= time_in_late_dec_cond
+
+            if not gradual:
+                continue
+
+            for contraction in contraction_events:
+
+                delayed_onset = (
+                    deceleration["start_idx"]
+                    >= contraction["start_idx"] + delay_samples
+                )
+
+                nadir_after_peak = deceleration["nadir_idx"] > contraction["peak_idx"]
+
+                recovery_after_contraction = (
+                    deceleration["end_idx"] > contraction["end_idx"]
+                )
+
+                if delayed_onset and nadir_after_peak and recovery_after_contraction:
+
+                    result[deceleration["start_idx"] : deceleration["end_idx"]] = True
+
+                    break
+
+        invalid = np.isnan(
+            np.asarray(
+                self.fhr,
+                dtype=float,
+            )
         )
 
-        # Keep NaNs where the deceleration duration could not be reliably computed
-        # late_deceleration_condition[np.isnan(min_dec)] = np.nan
+        result[invalid] = np.nan
 
-        late_deceleration_condition = np.where(
-            np.isnan(min_dec), np.nan, late_deceleration_condition
-        ).astype(object)
+        return result
 
-        # Extend the condition backward to cover the full deceleration period
-        late_deceleration_condition = self._extend_condition_back(
-            condition=late_deceleration_condition,
-            window=time_in_late_dec_cond * self.frequency,
-        )
-
-        return late_deceleration_condition
-
+    # antes de detectar su inicio, pico y final.
     def _get_contraction_condition(
         self,
         center: bool = False,
@@ -2368,72 +1847,54 @@ class CTG:
         duration_threshold: int = 20,
         baseline_duration: int = 120,
     ) -> np.ndarray:
-        """
-        Detect uterine contractions based on a sustained rise in UC signal above a dynamic baseline.
+        if self.uc is None:
+            return np.full(len(self.fhr), np.nan, dtype=object)
 
-        This method analyzes the uterine contraction (UC) signal by:
-        - Shifting the signal to account for physiological delay,
-        - Calculating a rolling baseline over a long window,
-        - Detecting short-duration rises above this baseline (contractions),
-        - Applying a value and duration threshold,
-        - Optionally extending detected contraction periods backward in time.
-
-        Args:
-            center (bool): Whether to center the rolling windows (affects alignment).
-            time_shift (int): Time delay (in seconds) to shift the UC signal to account for physiological lag.
-            value_threshold (int): Minimum increase over the baseline to be considered a contraction.
-            duration_threshold (int): Minimum duration (in seconds) that the increase must persist.
-            baseline_duration (int): Duration (in seconds) for calculating the dynamic UC baseline.
-
-        Returns:
-            np.ndarray: Boolean array indicating periods of uterine contractions.
-                        NaN values indicate insufficient data for computation.
-        """
-
-        UC = self.uc
-
-        # Safety check: if UC signal is unavailable, return an array of NaNs
-        if UC is None:
-            return np.nan * np.zeros(len(self.fhr))
-
+        uc = pd.Series(np.asarray(self.uc, dtype=float))
         freq = self.frequency
-
-        # Shift the UC signal forward to account for delay between contraction and FHR response
-        UC = self.uc.shift(time_shift * freq)
-
-        # Compute a rolling minimum over a long window to serve as a dynamic UC baseline
-        base_min_UC = UC.rolling(
-            window=baseline_duration * freq,
-            min_periods=int(self.NOT_NAN_PERC * baseline_duration * freq),
-            center=center,
-        ).min()
-
-        # Subtract the dynamic baseline to get the relative UC increase
-        diff_UC_base = UC - base_min_UC
-
-        # Check if the relative increase is sustained over a short duration (i.e., potential contraction)
-        min_diff_uc = diff_UC_base.rolling(
-            window=int(duration_threshold * freq),
-            min_periods=int(self.NOT_NAN_PERC * duration_threshold * freq),
-            center=center,
-        ).min()
-
-        # # Condition is True where sustained rise above baseline exceeds the value threshold
-        # contraction_condition = min_diff_uc > value_threshold
-
-        # # Preserve NaNs where contraction could not be evaluated
-        # contraction_condition[np.isnan(min_diff_uc)] = np.nan
-
-        contraction_condition = np.where(
-            np.isnan(min_diff_uc), np.nan, min_diff_uc > value_threshold
-        ).astype(object)
-
-        # Extend the detected contraction period backward in time by the duration threshold
-        contraction_condition = self._extend_condition_back(
-            condition=contraction_condition, window=int(duration_threshold * freq)
+        baseline_window = max(1, int(baseline_duration * freq))
+        duration_window = max(1, int(duration_threshold * freq))
+        min_base = max(
+            1, int(self.config.correlation.not_nans_threshold_porc * baseline_window)
+        )
+        min_duration = max(
+            1, int(self.config.correlation.not_nans_threshold_porc * duration_window)
         )
 
-        return contraction_condition
+        base_min = uc.rolling(
+            window=baseline_window,
+            min_periods=min_base,
+            center=center,
+        ).min()
+        diff = uc - base_min
+        sustained = diff.rolling(
+            window=duration_window,
+            min_periods=min_duration,
+            center=center,
+        ).min()
+
+        raw = np.where(np.isnan(sustained), np.nan, sustained > value_threshold).astype(
+            object
+        )
+        raw = self._extend_condition_back(raw, duration_window)
+
+        if time_shift:
+            numeric = np.array(
+                [
+                    (
+                        np.nan
+                        if (x is None or (isinstance(x, float) and np.isnan(x)))
+                        else float(bool(x))
+                    )
+                    for x in raw
+                ],
+                dtype=float,
+            )
+            shifted = self.shift_numpy(
+                numeric, int(time_shift * freq), fill_value=np.nan
+            )
+            return np.where(np.isnan(shifted), np.nan, shifted > 0.5).astype(object)
+        return raw
 
     def _get_prolonged_deceleration_condition(
         self,
@@ -2441,59 +1902,15 @@ class CTG:
         time_in_prolonged_dec: int = 3,
         center: bool = False,
     ) -> np.ndarray:
-        """
-        Identify prolonged decelerations based on sustained deceleration over a specified duration.
-
-        A prolonged deceleration is defined as a continuous deceleration that lasts
-        at least `time_in_prolonged_dec` minutes. This method uses a rolling window to
-        verify if the deceleration condition remains True throughout the entire window.
-
-        Args:
-            dec_cond (np.ndarray): Boolean array indicating deceleration events (1 = deceleration, 0 = no deceleration).
-            time_in_prolonged_dec (int): Minimum duration (in minutes) for a deceleration to be considered prolonged.
-            center (bool): Whether to center the rolling window or align it to the right.
-
-        Returns:
-            np.ndarray: Boolean array indicating periods of prolonged decelerations.
-                        NaNs indicate periods where insufficient data prevented evaluation.
-        """
-
-        freq = self.frequency
-
-        # Compute rolling max and min over the window to detect continuous deceleration
-        max_dec_X_min = dec_cond.rolling(
-            time_in_prolonged_dec * 60 * freq,
-            min_periods=int(self.NOT_NAN_PERC * time_in_prolonged_dec * 60 * freq),
-            center=center,
-        ).max()
-        min_dec_X_min = dec_cond.rolling(
-            time_in_prolonged_dec * 60 * freq,
-            min_periods=int(self.NOT_NAN_PERC * time_in_prolonged_dec * 60 * freq),
-            center=center,
-        ).min()
-
-        # A prolonged deceleration is one where the full window is continuously True (1)
-        prolonged_deceleration_condition = (max_dec_X_min == 1) & (min_dec_X_min == 1)
-
-        # Preserve NaNs where the window did not meet the minimum data requirement
-        # prolonged_deceleration_condition[np.isnan(min_dec_X_min)] = np.nan
-        prolonged_deceleration_condition = np.where(
-            np.isnan(min_dec_X_min), np.nan, prolonged_deceleration_condition
-        ).astype(object)
-
-        # Extend the condition backward to cover the duration of the prolonged deceleration
-        prolonged_deceleration_condition = self._extend_condition_back(
-            prolonged_deceleration_condition, window=time_in_prolonged_dec * 60 * freq
-        )
-
-        # TODO 1: Borrar
-        # if time_in_prolonged_dec == 5 and any(
-        #     prolonged_deceleration_condition.fillna(False)
-        # ):
-        #     print("Se encontró un valor True. Deteniendo ejecución. id:", self.id)
-        #     sys.exit()
-
-        return prolonged_deceleration_condition
+        n = len(self.fhr)
+        result = np.zeros(n, dtype=object)
+        threshold_sec = float(time_in_prolonged_dec) * 60.0
+        for event in self._get_deceleration_events():
+            if event["duration_sec"] > threshold_sec:
+                result[event["start_idx"] : event["end_idx"]] = True
+        invalid = np.isnan(np.asarray(self.fhr, dtype=float))
+        result[invalid] = np.nan
+        return result
 
     def _get_reduced_variability_condition(
         self,
@@ -2504,101 +1921,72 @@ class CTG:
         red_var_duration_deceleration: int = 3,
         red_var_bandwith: int = 5,
     ) -> np.ndarray:
-        """
-        Detect periods of reduced fetal heart rate (FHR) variability, either during baseline
-        or associated with decelerations.
-
-        Reduced variability is a potential indicator of fetal distress. This method:
-        - Computes short-term variability using a 1-minute window (max - min),
-        - Detects significant reduction in variability sustained over:
-            • Long baseline periods (e.g. 50 min),
-            • Short deceleration periods (e.g. 3 min),
-        - Combines both sources of reduced variability for final classification.
-
-        Args:
-            center (bool): Whether to center the rolling windows.
-            amplitude_dec_cond (int): Minimum amplitude to define a deceleration.
-            time_in_deceleration (int): Minimum duration (in seconds) for a deceleration.
-            red_var_duration_baseline (int): Duration (in minutes) for evaluating reduced variability at baseline.
-            red_var_duration_deceleration (int): Duration (in minutes) for reduced variability during decelerations.
-            red_var_bandwith (int): Threshold for defining reduced variability (in bpm).
-
-        Returns:
-            np.ndarray: Boolean array indicating reduced variability periods.
-        """
-
-        FHR = self.fhr
+        fhr = np.asarray(self.fhr, dtype=float)
         freq = self.frequency
-
-        # Calculate 1-minute rolling max and min to define short-term FHR variability
-        max_FHR_1_min = FHR.rolling(
-            window=60 * freq,
-            min_periods=int(self.NOT_NAN_PERC * 60 * freq),
-            center=center,
-        ).max()
-        min_FHR_1_min = FHR.rolling(
-            window=60 * freq,
-            min_periods=int(self.NOT_NAN_PERC * 60 * freq),
-            center=center,
-        ).min()
-
-        # Variability (bandwidth) over 1-minute windows
-        FHR_bandwith_1_min = max_FHR_1_min - min_FHR_1_min
-
-        # Get deceleration periods
-        dec_cond = self._get_deceleration_condition(
-            amplitude_deceleration=amplitude_dec_cond,
-            time_in_deceleration=time_in_deceleration,
-        )
-
-        # Compute max variability over long durations to detect prolonged reduction
-        max_FHR_bandwith_50_min = FHR_bandwith_1_min.rolling(
-            window=red_var_duration_baseline * 60 * freq,
-            min_periods=int(self.NOT_NAN_PERC * red_var_duration_baseline * 60 * freq),
-            center=center,
-        ).max()
-
-        # Maximum variability during shorter deceleration windows
-        max_FHR_bandwith_3_min = FHR_bandwith_1_min.rolling(
-            window=red_var_duration_deceleration * 60 * freq,
-            min_periods=int(
-                self.NOT_NAN_PERC * red_var_duration_deceleration * 60 * freq
+        dec_cond = np.asarray(
+            self._get_deceleration_condition(
+                amplitude_deceleration=amplitude_dec_cond,
+                time_in_deceleration=time_in_deceleration,
             ),
-            center=center,
-        ).max()
-
-        # Reduced variability in baseline segments (long duration)
-        # red_var_base = max_FHR_bandwith_50_min < red_var_bandwith
-        # red_var_base[np.isnan(max_FHR_bandwith_50_min)] = np.nan
-
-        red_var_base = np.where(
-            np.isnan(max_FHR_bandwith_50_min),
-            np.nan,
-            max_FHR_bandwith_50_min < red_var_bandwith,
-        ).astype(object)
-
-        red_var_base = self._extend_condition_back(
-            red_var_base, window=red_var_duration_baseline * 60 * freq
+            dtype=object,
+        )
+        event_mask = self._get_event_mask(
+            fhr,
+            np.asarray(self._baseline, dtype=float),
+            amplitude=15,
+            duration_sec=15,
         )
 
-        # Reduced variability during decelerations (short duration)
-        # red_var_dec = (max_FHR_bandwith_3_min < red_var_bandwith) & (dec_cond == True)
-        # red_var_base[np.isnan(max_FHR_bandwith_3_min)] = np.nan
+        def bandwidth_1min(values):
+            s = pd.Series(values)
+            w = max(1, int(60 * freq))
+            mp = max(1, int(self.config.correlation.not_nans_threshold_porc * w))
+            return (
+                s.rolling(w, min_periods=mp, center=center).max()
+                - s.rolling(w, min_periods=mp, center=center).min()
+            )
 
-        red_var_dec = np.where(
-            np.isnan(max_FHR_bandwith_3_min),
-            np.nan,
-            (max_FHR_bandwith_3_min < red_var_bandwith) & (dec_cond == True),
-        ).astype(object)
-
-        red_var_dec = self._extend_condition_back(
-            red_var_dec, window=red_var_duration_deceleration * 60 * freq
+        # Estimate baseline variability after excluding transient FHR events.
+        fhr_base = fhr.copy()
+        fhr_base[event_mask] = np.nan
+        bw_base = bandwidth_1min(fhr_base)
+        base_low = bw_base < red_var_bandwith
+        base_window = max(1, int(red_var_duration_baseline * 60 * freq))
+        base_sustained = (
+            base_low.astype(float)
+            .rolling(
+                base_window,
+                min_periods=max(
+                    1,
+                    int(self.config.correlation.not_nans_threshold_porc * base_window),
+                ),
+                center=center,
+            )
+            .min()
+            == 1.0
         )
 
-        # Combine both baseline and deceleration-related reduced variability
-        reduced_variability_condition = (red_var_base == True) | (red_var_dec == True)
+        # During decelerations, evaluate variability on the original FHR signal.
+        bw_raw = bandwidth_1min(fhr)
+        dec_bool = np.array([x is True or x == 1 for x in dec_cond], dtype=bool)
+        dec_low = (bw_raw < red_var_bandwith).to_numpy() & dec_bool
+        dec_window = max(1, int(red_var_duration_deceleration * 60 * freq))
+        dec_sustained = (
+            pd.Series(dec_low.astype(float))
+            .rolling(
+                dec_window,
+                min_periods=max(
+                    1, int(self.config.correlation.not_nans_threshold_porc * dec_window)
+                ),
+                center=center,
+            )
+            .min()
+            == 1.0
+        )
 
-        return reduced_variability_condition
+        out = (base_sustained.to_numpy() | dec_sustained.to_numpy()).astype(object)
+        out[np.isnan(fhr)] = np.nan
+        return out
 
     def _get_increased_variability_condition(
         self,
@@ -2606,144 +1994,51 @@ class CTG:
         center: bool = False,
         min_time: int = 30,
         bandwidth_min: float = 25,
-    ) -> pd.Series:
-        """
-        Detect periods of increased fetal heart rate (FHR) variability,
-        characterized by wide oscillations in FHR sustained over time.
-
-        This function computes the short-term variability (1-minute bandwidth)
-        and identifies when this variability remains consistently above a threshold
-        for a given duration.
-
-        Args:
-            window_var (int): Size (in minutes) of the rolling window used to compute 1-minute variability.
-            center (bool): Whether the rolling window should be centered.
-            min_time (int): Minimum duration (in minutes) the high variability must be sustained.
-            bandwidth_min (float): Threshold in bpm for defining "increased" variability.
-
-        Returns:
-            pd.Series: Boolean series indicating when increased variability is present.
-        """
-
+    ) -> np.ndarray:
+        fhr = np.asarray(self.fhr, dtype=float)
         freq = self.frequency
-
-        # Calculate 1-minute rolling max and min of the FHR signal
-        max_FHR_1_min = self.fhr.rolling(
-            window=60 * freq * window_var,
-            min_periods=int(self.NOT_NAN_PERC * 60 * freq * window_var),
-            center=center,
-        ).max()
-
-        min_FHR_1_min = self.fhr.rolling(
-            window=60 * freq * window_var,
-            min_periods=int(self.NOT_NAN_PERC * 60 * freq * window_var),
-            center=center,
-        ).min()
-
-        # Compute variability (bandwidth = max - min) over 1-minute windows
-        FHR_bandwith_1_min = max_FHR_1_min - min_FHR_1_min
-
-        # Compute the *minimum* bandwidth over a 30-minute window
-        # This detects sustained periods of wide variability
-        min_FHR_bandwith_30_min = FHR_bandwith_1_min.rolling(
-            window=min_time * 60 * freq,
-            min_periods=int(self.NOT_NAN_PERC * min_time * 60 * freq),
-            center=center,
-        ).min()
-
-        # Identify periods where even the minimum variability in the window exceeds the threshold
-        # increased_variability_condition = min_FHR_bandwith_30_min > bandwidth_min
-
-        # Set NaN where rolling window results are unreliable (not enough data)
-        # increased_variability_condition[np.isnan(min_FHR_bandwith_30_min)] = np.nan
-
-        increased_variability_condition = np.where(
-            np.isnan(min_FHR_bandwith_30_min),
-            np.nan,
-            min_FHR_bandwith_30_min > bandwidth_min,
-        ).astype(object)
-
-        # Extend the condition backward to cover the full 30-minute window
-        increased_variability_condition = self._extend_condition_back(
-            increased_variability_condition, window=min_time * 60 * freq
+        event_mask = self._get_event_mask(
+            fhr,
+            np.asarray(self._baseline, dtype=float),
+            amplitude=15,
+            duration_sec=15,
+        )
+        clean = fhr.copy()
+        clean[event_mask] = np.nan
+        s = pd.Series(clean)
+        w = max(1, int(60 * freq * window_var))
+        mp = max(1, int(self.config.correlation.not_nans_threshold_porc * w))
+        bw = (
+            s.rolling(w, min_periods=mp, center=center).max()
+            - s.rolling(w, min_periods=mp, center=center).min()
         )
 
-        return increased_variability_condition
+        long_w = max(1, int(min_time * 60 * freq))
+        long_mp = max(1, int(self.config.correlation.not_nans_threshold_porc * long_w))
+        sustained = (bw > bandwidth_min).astype(float).rolling(
+            long_w, min_periods=long_mp, center=center
+        ).min() == 1.0
+        out = sustained.to_numpy(dtype=object)
+        out[np.isnan(fhr)] = np.nan
+        return out
 
     def _get_variable_deceleration_condition(self, center: bool = False) -> pd.Series:
-        """
-        Detect variable decelerations in the fetal heart rate (FHR) signal.
-
-        Variable decelerations are V-shaped decelerations characterized by a rapid drop
-        (onset to nadir in <30s) and rapid recovery, often occurring within 60 seconds.
-
-        This method detects such events by:
-            - Looking for decelerations that start and end within 60 seconds,
-            - Excluding those that are prolonged, late, or early decelerations.
-
-        Args:
-            center (bool): Whether the rolling windows are centered.
-
-        Returns:
-            pd.Series: Boolean series indicating variable deceleration periods.
-                    NaN values indicate insufficient data for evaluation.
-        """
-
-        FHR = self.fhr
-        freq = self.frequency
-
-        # Variable Decelerations: V-shaped decelerations that exhibit a rapid drop (onset to nadir in <30s)
-        # followed by a rapid recovery to the baseline
-        # we assume that in 60s there are a rapid drop and a rapid recovery, so it is a deceleration <60s
-
-        # Get general deceleration condition
-        dec_cond = self._get_deceleration_condition()
-
-        # Rolling max and min over 60 seconds of deceleration condition
-        max_dec_60_sec = (
-            (1 * dec_cond)
-            .rolling(
-                window=60 * freq,
-                min_periods=int(self.NOT_NAN_PERC * 60 * freq),
-                center=center,
-            )
-            .max()
+        result = np.zeros(len(self.fhr), dtype=object)
+        late = self._get_late_deceleration_condition(
+            dec_cond=self._get_deceleration_condition(), center=center
         )
-        min_dec_60_sec = (
-            (1 * dec_cond)
-            .rolling(
-                window=60 * freq,
-                min_periods=int(self.NOT_NAN_PERC * 60 * freq),
-                center=center,
-            )
-            .min()
-        )
-        dec_cond_bandwith_60_sec = max_dec_60_sec - min_dec_60_sec
-        # maximum is 1 (could be nan), minimum is 0 -> there are a rapid drop and recovery in 60s
+        late_bool = np.array([x is True or x == 1 for x in late], dtype=bool)
 
-        # Deceleration must rise and fall within 60s (i.e., variability in condition within that window)
-        variable_deceleration_condition = (
-            (max_dec_60_sec == 1) & (min_dec_60_sec == 0) & (dec_cond == True)
-        )
+        for event in self._get_deceleration_events():
+            if event["duration_sec"] > 180:
+                continue
+            rapid_drop = event["onset_to_nadir_sec"] < 30.0
+            rapid_recovery = event["recovery_sec"] < 30.0
+            if rapid_drop and rapid_recovery and not late_bool[event["nadir_idx"]]:
+                result[event["start_idx"] : event["end_idx"]] = True
 
-        # Remove decelerations that are classified as late, prolonged, or early
-        late_dec_cond = self._get_late_deceleration_condition()
-        prol_dec_3_min_cond = self._get_prolonged_deceleration_condition(minutes=3)
-        early_dec_cond = self._get_early_deceleration_condition()
-
-        variable_deceleration_condition = (
-            (variable_deceleration_condition == True)
-            & (late_dec_cond != True)
-            & (prol_dec_3_min_cond != True)
-            & (early_dec_cond != True)
-        )
-
-        # Set NaN where rolling statistics were not computed
-        variable_deceleration_condition[np.isnan(min_dec_60_sec)] = np.nan
-
-        # variable_deceleration_condition = extend_condition_back(variable_deceleration_condition, window=minutes*60*freq)
-
-        return variable_deceleration_condition
+        result[np.isnan(np.asarray(self.fhr, dtype=float))] = np.nan
+        return pd.Series(result, index=np.arange(len(result)))
 
     def _get_early_deceleration_condition(
         self,
@@ -2753,95 +2048,286 @@ class CTG:
         contraction_baseline_duration: int = 120,
         center: bool = False,
     ) -> pd.Series:
-        """
-        Detect early decelerations in the fetal heart rate (FHR) signal.
+        n = len(self.fhr)
+        result = np.zeros(n, dtype=object)
+        if self.uc is None:
+            result[:] = np.nan
+            return pd.Series(result)
 
-        Early decelerations are gradual decreases in FHR (onset to nadir ≥ 30s)
-        that return to baseline, and the nadir occurs simultaneously with the
-        peak of a uterine contraction.
-
-        This method assumes early decelerations last longer than 60 seconds
-        and overlap in time with uterine contractions.
-
-        Args:
-            contraction_time_shift (int): Time (in seconds) to shift UC signal to align with expected FHR response.
-            contraction_value_threshold (int): Minimum amplitude above UC baseline to define a contraction.
-            contraction_duration_threshold (int): Minimum duration (in seconds) of a contraction.
-            contraction_baseline_duration (int): Time (in seconds) over which to compute the UC baseline.
-            center (bool): Whether to center rolling windows.
-
-        Returns:
-            pd.Series: Boolean series indicating early deceleration periods.
-                    NaN values represent regions where the condition could not be evaluated.
-        """
-
-        FHR = self.fhr
-        UC = self.uc
-        freq = self.frequency
-
-        # Early Decelerations: : Decelerations that are gradual (onset to nadir ≥30s) that return to the baseline.
-        # The nadir occurs with the peak of a contraction
-        # we assume that it is a deceleration >60s
-
-        # Return NaNs if uterine contraction data is unavailable
-        if UC is None:
-            return np.nan * np.zeros(len(FHR))
-
-        # Get deceleration condition mask (boolean)
-        dec_cond = self._get_deceleration_condition()
-
-        # Rolling max and min over 60 seconds to assess deceleration persistence
-        max_dec_60_sec = (
-            (1 * dec_cond)
-            .rolling(
-                window=60 * freq,
-                min_periods=int(self.NOT_NAN_PERC * 60 * freq),
-                center=center,
-            )
-            .max()
-        )
-        min_dec_60_sec = (
-            (1 * dec_cond)
-            .rolling(
-                window=60 * freq,
-                min_periods=int(self.NOT_NAN_PERC * 60 * freq),
-                center=center,
-            )
-            .min()
-        )
-        dec_cond_bandwith_60_sec = max_dec_60_sec - min_dec_60_sec
-
-        # there are only 1s, maximum is 1 (could be nan) -> duration >60s
-        # Deceleration condition must be continuously True over 60s (bandwidth = 0)
-        aux_early_deceleration_condition = (max_dec_60_sec == 1) & (min_dec_60_sec == 1)
-
-        # TODO: Comprobar si estas contraciones deberian estar desplazadas también
-        # Get contraction mask (True when contractions are detected)
-        contr_condition = self._get_contraction_condition(
-            time_shift=contraction_time_shift,
+        contractions = self._get_contraction_events(
+            time_shift=0,
             value_threshold=contraction_value_threshold,
             duration_threshold=contraction_duration_threshold,
             baseline_duration=contraction_baseline_duration,
             center=center,
         )
+        fhr = np.asarray(self.fhr, dtype=float)
+        tolerance = int(20 * self.frequency)
 
-        # Early deceleration = prolonged deceleration that overlaps with contraction
-        early_deceleration_condition = (aux_early_deceleration_condition == True) & (
-            contr_condition == True
+        for d in self._get_deceleration_events():
+            gradual = d["onset_to_nadir_sec"] >= 30.0
+            if not gradual:
+                continue
+            seg = fhr[d["start_idx"] : d["end_idx"]]
+            normal_var = len(seg) > 0 and np.nanmax(seg) - np.nanmin(seg) >= 5.0
+            for c in contractions:
+                coincident_peak = abs(d["nadir_idx"] - c["peak_idx"]) <= tolerance
+                overlap = (
+                    d["start_idx"] < c["end_idx"] and d["end_idx"] > c["start_idx"]
+                )
+                if coincident_peak and overlap and normal_var:
+                    result[d["start_idx"] : d["end_idx"]] = True
+                    break
+
+        result[np.isnan(fhr)] = np.nan
+        return pd.Series(result, index=np.arange(n))
+
+    def _get_deceleration_events(
+        self,
+        amplitude_deceleration: float = 15.0,
+        time_in_deceleration: float = 15.0,
+        recovery_tolerance_bpm: float = 5.0,
+        recovery_sec: float = 5.0,
+    ) -> list:
+        fhr = np.asarray(self.fhr, dtype=float)
+        baseline = np.asarray(self._baseline, dtype=float)
+        diff = baseline - fhr
+        valid = np.isfinite(fhr) & np.isfinite(baseline)
+        core = valid & (diff > amplitude_deceleration)
+        min_samples = max(1, int(time_in_deceleration * self.frequency))
+
+        padded = np.r_[False, core, False]
+        trans = np.diff(padded.astype(np.int8))
+        starts = np.flatnonzero(trans == 1)
+        ends = np.flatnonzero(trans == -1)
+        events = []
+        recovery_samples = max(1, int(recovery_sec * self.frequency))
+
+        for core_start, core_end in zip(starts, ends):
+            if core_end - core_start <= min_samples:
+                continue
+
+            # Extend the onset until the FHR returns close to the baseline.
+            start = core_start
+            while (
+                start > 0
+                and np.isfinite(diff[start - 1])
+                and diff[start - 1] > recovery_tolerance_bpm
+            ):
+                start -= 1
+
+            # Extend the end until a sustained recovery to baseline is observed.
+            end = core_end
+            i = core_end
+            while i < len(fhr):
+                j = min(len(fhr), i + recovery_samples)
+                seg = diff[i:j]
+                if len(seg) == recovery_samples and np.all(
+                    np.isfinite(seg) & (seg <= recovery_tolerance_bpm)
+                ):
+                    end = i
+                    break
+                i += 1
+            else:
+                end = len(fhr)
+
+            if end <= start:
+                continue
+            segment = fhr[start:end]
+            if not np.isfinite(segment).any():
+                continue
+            nadir_rel = int(np.nanargmin(segment))
+            nadir = start + nadir_rel
+            amplitude = baseline[nadir] - fhr[nadir]
+            duration_sec = (end - start) / self.frequency
+            onset_to_nadir_sec = (nadir - start) / self.frequency
+            recovery_sec_value = (end - nadir) / self.frequency
+
+            events.append(
+                {
+                    "start_idx": int(start),
+                    "nadir_idx": int(nadir),
+                    "end_idx": int(end),
+                    "amplitude": float(amplitude),
+                    "duration_sec": float(duration_sec),
+                    "onset_to_nadir_sec": float(onset_to_nadir_sec),
+                    "recovery_sec": float(recovery_sec_value),
+                }
+            )
+        return events
+
+    def _get_contraction_events(
+        self,
+        center: bool = False,
+        time_shift: int = 0,
+        value_threshold: int = 10,
+        duration_threshold: int = 20,
+        baseline_duration: int = 120,
+    ) -> list:
+        if self.uc is None:
+            return []
+        mask = self._get_contraction_condition(
+            center=center,
+            time_shift=time_shift,
+            value_threshold=value_threshold,
+            duration_threshold=duration_threshold,
+            baseline_duration=baseline_duration,
+        )
+        bool_mask = np.array([x is True or x == 1 for x in mask], dtype=bool)
+        padded = np.r_[False, bool_mask, False]
+        trans = np.diff(padded.astype(np.int8))
+        starts = np.flatnonzero(trans == 1)
+        ends = np.flatnonzero(trans == -1)
+        uc = np.asarray(self.uc, dtype=float)
+        events = []
+        for start, end in zip(starts, ends):
+            if end <= start:
+                continue
+            seg = uc[start:end]
+            if not np.isfinite(seg).any():
+                continue
+            peak = start + int(np.nanargmax(seg))
+            events.append(
+                {
+                    "start_idx": int(start),
+                    "peak_idx": int(peak),
+                    "end_idx": int(end),
+                    "duration_sec": float((end - start) / self.frequency),
+                }
+            )
+        return events
+
+    def _associate_decelerations_to_contractions(
+        self,
+        deceleration_events: list,
+        contraction_events: list,
+        association_margin_sec: float = 60.0,
+    ) -> list:
+        """
+        Associate detected decelerations with uterine contractions.
+
+        Each contraction can be associated with at most one deceleration and
+        each deceleration can be assigned to at most one contraction.
+
+        Association is based on temporal overlap between the deceleration and
+        an extended contraction interval. When several possible associations
+        exist, the pair with the smallest distance between the contraction peak
+        and the deceleration nadir is selected.
+
+        Parameters
+        ----------
+        deceleration_events : list
+            Output of `_get_deceleration_events()`.
+
+        contraction_events : list
+            Output of `_get_contraction_events()`.
+
+        association_margin_sec : float
+            Temporal margin added before and after each contraction when
+            searching for an associated deceleration.
+
+        Returns
+        -------
+        list of dict
+            One dictionary per contraction with:
+                - contraction
+                - deceleration
+                - associated
+        """
+
+        associations = []
+
+        if len(contraction_events) == 0:
+            return associations
+
+        margin = int(association_margin_sec * self.frequency)
+
+        # Keep track of decelerations already assigned to a contraction.
+        used_decelerations = set()
+
+        for contraction in contraction_events:
+
+            c_start = max(0, contraction["start_idx"] - margin)
+
+            c_end = min(len(self.fhr), contraction["end_idx"] + margin)
+
+            candidates = []
+
+            for dec_idx, deceleration in enumerate(deceleration_events):
+
+                if dec_idx in used_decelerations:
+                    continue
+
+                # Temporal overlap between deceleration and
+                # extended contraction interval.
+                overlaps = (
+                    deceleration["start_idx"] < c_end
+                    and deceleration["end_idx"] > c_start
+                )
+
+                if not overlaps:
+                    continue
+
+                # Prefer the deceleration whose nadir is closest
+                # to the contraction peak.
+                distance = abs(deceleration["nadir_idx"] - contraction["peak_idx"])
+
+                candidates.append(
+                    (
+                        distance,
+                        dec_idx,
+                        deceleration,
+                    )
+                )
+
+            if len(candidates) == 0:
+
+                associations.append(
+                    {
+                        "contraction": contraction,
+                        "deceleration": None,
+                        "associated": False,
+                    }
+                )
+
+                continue
+
+            # Smallest peak-nadir distance
+            candidates.sort(key=lambda x: x[0])
+
+            _, dec_idx, deceleration = candidates[0]
+
+            used_decelerations.add(dec_idx)
+
+            associations.append(
+                {
+                    "contraction": contraction,
+                    "deceleration": deceleration,
+                    "associated": True,
+                }
+            )
+
+        return associations
+
+    def _get_tachysystole_condition(self, center: bool = False) -> np.ndarray:
+        n = len(self.fhr)
+        if self.uc is None:
+            return np.full(n, np.nan, dtype=object)
+        events = self._get_contraction_events(center=center, time_shift=0)
+        impulse = np.zeros(n, dtype=float)
+        for event in events:
+            impulse[event["peak_idx"]] = 1.0
+
+        w10 = max(1, int(10 * 60 * self.frequency))
+        c10 = pd.Series(impulse).rolling(w10, min_periods=1, center=center).sum()
+        high10 = c10 > 5
+        # Require the >5 contractions/10 min condition to persist for 10 minutes.
+        two_successive = (
+            high10.astype(float).rolling(w10, min_periods=w10, center=center).min()
+            == 1.0
         )
 
-        # print(len(early_deceleration_condition), len(min_dec_60_sec))
-        # Assign NaNs to preserve locations where min_dec_60_sec is invalid
-        early_deceleration_condition[np.isnan(min_dec_60_sec)] = np.nan
-
-        # Extend the condition backward to capture full duration of deceleration
-        early_deceleration_condition = self._extend_condition_back(
-            early_deceleration_condition, window=60 * freq
-        )
-
-        return early_deceleration_condition
-
-    def get_gaps_fhr(self):
-        # hacer
-
-        return -1
+        w30 = max(1, int(30 * 60 * self.frequency))
+        c30 = pd.Series(impulse).rolling(w30, min_periods=1, center=center).sum()
+        averaged30 = c30 > 15  # Equivalent to >5 contractions per 10 min over 30 min
+        return (two_successive.to_numpy() | averaged30.to_numpy()).astype(object)

@@ -26,10 +26,6 @@
 
     "fourier_num_bases": 360, 
 
-    // Correlation Curve
-    "max_sec_displacement" : 60,
-    "not_nans_threshold_porc" : 0.3,
-
     // Apply Rules
     "guidelines_rules" : "FIGO", // rules_type
     "center_window" : false, // center
@@ -54,16 +50,5 @@
     "incr_var_bandwidth" : 25, 
     "red_var_duration_baseline" : 50, 
     "red_var_duration_deceleration" : 3, 
-    "red_var_bandwith" : 5,
-
-    // Features
-    "type_features" : "M_L_NL_IBTF_CLINIC", // M, M_L, M_L_NL, M_L_NL_IBTF, M_L_NL_IBTF_CLINIC, ... + FDA, FDA_CLINIC
-    "morphological_features" : ["baseline", "DCC", "ACC"],
-    "linear_features" : ["mean", "std", "LTV", "delta", "STV", "II"],
-    "nolinear_features" : ["ApEn015", "ApEn020", "SampEn015", "SampEn020", "LZC"],
-    "IBTF_features" : ["contrast VLF", "correlation VLF", "energy VLF", "homogeneity VLF", "contrast LF", "correlation LF", "energy LF", "homogeneity LF", "contrast MF", "correlation MF", "energy MF", "homogeneity MF", "contrast HF", "correlation HF", "energy HF", "homogeneity HF"], 
-    "clinical_features" : ["age", "gravidity", "parity", "gest. weeks",  "diabetes", "hypertension", "preeclampsia"],
-
-    "clinical_features_binary" : ["diabetes", "hypertension", "preeclampsia"],
-    "clinical_features_numeric" : ["age", "gravidity", "parity", "gest. weeks"] 
+    "red_var_bandwith" : 5
 }
