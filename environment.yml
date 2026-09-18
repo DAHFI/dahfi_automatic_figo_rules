@@ -1,0 +1,17 @@
+name: torch_cpu_ccc
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - numpy=1.26.4
+  - pandas=2.3.3
+  - scipy=1.15.2
+  - scikit-learn
+  - pytorch=2.5.1
+  - cpuonly
+  - pip
+  - pip:
+      - feature-engine==1.9.4
